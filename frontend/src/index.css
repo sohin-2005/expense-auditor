@@ -1,0 +1,39 @@
+:root {
+  --font-heading: 'Playfair Display', serif;
+  --font-body: 'Inter', sans-serif;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #0d0d10;
+}
+
+body,
+input,
+button,
+select,
+textarea,
+label,
+p,
+span,
+td,
+th,
+li {
+  font-family: var(--font-body);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.page-title,
+.section-title {
+  font-family: var(--font-heading);
+}
