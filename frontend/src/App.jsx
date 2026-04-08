@@ -4,7 +4,12 @@ import axios from "axios"
 import { FileText, ClipboardList, AlertTriangle, ScanLine, ShieldCheck, BadgeCheck, ChartNoAxesColumn, Bell, RefreshCw, MapPin, CalendarDays, Briefcase, Plane, BedDouble, UtensilsCrossed, ShieldAlert, WandSparkles } from "lucide-react"
 
 const isLocalHost = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)
-const API = import.meta.env.VITE_API_URL || (isLocalHost ? "http://127.0.0.1:8000" : "")
+const configuredApiUrl = (import.meta.env.VITE_API_URL || "").trim()
+const API = configuredApiUrl || (isLocalHost ? "http://127.0.0.1:8000" : "")
+const API_TIMEOUT_MS = 45000
+const API_CONFIG_ERROR = !API
+  ? "Backend API is not configured. Set VITE_API_URL to your deployed backend URL in Vercel Project Settings and redeploy."
+  : ""
 const BRAND_NAME = "Audixa"
 const BRAND_LOGO = "/audixa-logo.png?v=20260407"
 
@@ -512,8 +517,8 @@ function Dashboard({ profile, setPage, setCurrent }) {
         const token = await getToken()
         const headers = { Authorization: `Bearer ${token}` }
         const [claimsReq, expensesReq] = await Promise.allSettled([
-          axios.get(`${API}/claims/my?limit=20&offset=0`, { headers, timeout: 15000 }),
-          axios.get(`${API}/expenses/available?limit=50&offset=0`, { headers, timeout: 15000 }),
+          axios.get(`${API}/claims/my?limit=20&offset=0`, { headers, timeout: API_TIMEOUT_MS }),
+          axios.get(`${API}/expenses/available?limit=50&offset=0`, { headers, timeout: API_TIMEOUT_MS }),
         ])
 
         const claimsRes = claimsReq.status === "fulfilled" ? claimsReq.value : { data: { claims: [], paging: {} } }
@@ -2352,8 +2357,8 @@ function NotificationsPage() {
       const token = await getToken()
       const headers = { Authorization: `Bearer ${token}` }
       const [claimsReq, expensesReq] = await Promise.allSettled([
-        axios.get(`${API}/claims/my?limit=120&offset=0`, { headers, timeout: 15000 }),
-        axios.get(`${API}/expenses?limit=200&offset=0`, { headers, timeout: 15000 }),
+        axios.get(`${API}/claims/my?limit=120&offset=0`, { headers, timeout: API_TIMEOUT_MS }),
+        axios.get(`${API}/expenses?limit=200&offset=0`, { headers, timeout: API_TIMEOUT_MS }),
       ])
 
       const claimsRes = claimsReq.status === "fulfilled" ? claimsReq.value : { data: { claims: [] } }
@@ -2889,6 +2894,47 @@ export default function App() {
   const [page, setPage] = useState("dashboard")
   const [currentClaim, setCurrentClaim] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [apiError, setApiError] = useState("")
+
+  const checkBackend = async () => {
+    if (API_CONFIG_ERROR) {
+      setApiError(API_CONFIG_ERROR)
+      return
+    }
+
+    try {
+      await axios.get(`${API}/health`, { timeout: API_TIMEOUT_MS })
+      setApiError("")
+    } catch {
+      setApiError(`Cannot reach backend at ${API}. Check backend deployment and CORS settings.`)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    const verifyApi = async () => {
+      if (API_CONFIG_ERROR) {
+        if (!cancelled) setApiError(API_CONFIG_ERROR)
+        return
+      }
+
+      try {
+        await axios.get(`${API}/health`, { timeout: API_TIMEOUT_MS })
+        if (!cancelled) setApiError("")
+      } catch {
+        if (!cancelled) {
+          setApiError(`Cannot reach backend at ${API}. Check backend deployment and CORS settings.`)
+        }
+      }
+    }
+
+    verifyApi()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     const loadProfile = async (sess) => {
@@ -2956,6 +3002,26 @@ export default function App() {
       </div>
     </div>
   )
+
+  if (apiError) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif", background: THEME.bg, color: THEME.textPrimary, padding: 24 }}>
+        <div style={{ maxWidth: 760, width: "100%", background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 14, padding: 20 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Backend connection issue</div>
+          <div style={{ fontSize: 14, color: THEME.textSecond, lineHeight: 1.6, marginBottom: 12 }}>{apiError}</div>
+          <div style={{ fontSize: 12, color: THEME.textMuted, marginBottom: 14 }}>
+            Active API URL: {API || "(empty)"}
+          </div>
+          <div style={{ fontSize: 13, color: THEME.textSecond, lineHeight: 1.6 }}>
+            Quick fix: set <b>VITE_API_URL</b> to your backend base URL (for example: <b>https://your-backend-domain.com</b>) and redeploy frontend.
+          </div>
+          <button onClick={checkBackend} style={{ marginTop: 14, padding: "8px 12px", borderRadius: 8, border: `1px solid ${THEME.border}`, background: THEME.surfaceAlt, color: THEME.textPrimary, cursor: "pointer", fontWeight: 600 }}>
+            Retry backend check
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (!session) return <AuthPage onAuth={(user, sess, prof) => { setSession(sess); setProfile(prof) }} />
 
