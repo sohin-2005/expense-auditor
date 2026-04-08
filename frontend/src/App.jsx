@@ -90,6 +90,23 @@ const getISTGreeting = () => {
   return "Good night"
 }
 
+const useIsMobile = (breakpoint = 900) => {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined") return false
+    return window.innerWidth <= breakpoint
+  })
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const onResize = () => setIsMobile(window.innerWidth <= breakpoint)
+    onResize()
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [breakpoint])
+
+  return isMobile
+}
+
 const StatusBadge = ({ status }) => {
   const normalized = normalizeStatus(status)
   const s = STATUS_STYLES[normalized] || STATUS_STYLES.Draft
@@ -144,6 +161,7 @@ const Select = ({ label, required, error, children, ...props }) => (
 )
 
 function AuthPage({ onAuth }) {
+  const isMobile = useIsMobile(960)
   const [mode, setMode] = useState("login")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -172,38 +190,39 @@ function AuthPage({ onAuth }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", background: "#0B0F19", fontFamily: "Inter, system-ui, sans-serif" }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: isMobile ? "column" : "row", background: "#0B0F19", fontFamily: "Inter, system-ui, sans-serif" }}>
       <div style={{
-        width: "52%",
+        width: isMobile ? "100%" : "52%",
         position: "relative",
         overflow: "hidden",
         display: "flex",
         flexDirection: "column",
         justifyContent: "center",
-        padding: "72px 58px",
+        padding: isMobile ? "34px 20px" : "72px 58px",
         color: "#E5E7EB",
         background: "radial-gradient(900px 520px at 20% 25%, rgba(132,204,22,0.22), transparent 60%), radial-gradient(700px 480px at 65% 60%, rgba(16,185,129,0.10), transparent 70%), linear-gradient(160deg, #0d1a00 0%, #0e1510 45%, #0B0F19 100%)",
-        borderRight: `1px solid ${THEME.border}`
+        borderRight: isMobile ? "none" : `1px solid ${THEME.border}`,
+        borderBottom: isMobile ? `1px solid ${THEME.border}` : "none"
       }}>
         <div style={{ position: "absolute", inset: 0, pointerEvents: "none", opacity: 0.2, backgroundImage: "linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)", backgroundSize: "34px 34px" }} />
         <div style={{ position: "absolute", top: -120, left: -120, width: 280, height: 280, borderRadius: "50%", background: "radial-gradient(circle, rgba(132,204,22,0.30) 0%, rgba(132,204,22,0) 70%)", filter: "blur(8px)", pointerEvents: "none" }} />
         <div style={{ position: "absolute", bottom: -100, right: -80, width: 260, height: 260, borderRadius: "50%", background: "radial-gradient(circle, rgba(16,185,129,0.22) 0%, rgba(16,185,129,0) 72%)", filter: "blur(10px)", pointerEvents: "none" }} />
 
         <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-          <div style={{ fontSize: 38, fontWeight: 700, letterSpacing: "0.04em", lineHeight: 1, textTransform: "uppercase", fontFamily: "Inter, system-ui, sans-serif" }}>
+          <div style={{ fontSize: isMobile ? 32 : 38, fontWeight: 700, letterSpacing: "0.04em", lineHeight: 1, textTransform: "uppercase", fontFamily: "Inter, system-ui, sans-serif" }}>
             <span style={{ color: "#E5E7EB" }}>AUDI</span><span style={{ color: "#84CC16" }}>XA</span>
           </div>
         </div>
 
-        <div style={{ position: "relative", fontSize: 43, fontWeight: 600, marginBottom: 18, lineHeight: 1.2, maxWidth: 560, fontFamily: "'Playfair Display', Georgia, serif", letterSpacing: "0.01em" }}>
+        <div style={{ position: "relative", fontSize: isMobile ? 30 : 43, fontWeight: 600, marginBottom: 18, lineHeight: 1.2, maxWidth: 560, fontFamily: "'Playfair Display', Georgia, serif", letterSpacing: "0.01em" }}>
           Smart Expense Management for Modern Teams
         </div>
 
-        <div style={{ position: "relative", fontSize: 17, color: "#AAB4C4", lineHeight: 1.75, maxWidth: 560, marginBottom: 34 }}>
+        <div style={{ position: "relative", fontSize: isMobile ? 15 : 17, color: "#AAB4C4", lineHeight: 1.75, maxWidth: 560, marginBottom: 34 }}>
           Submit, track, and approve expense claims with AI-powered receipt scanning and real-time policy compliance.
         </div>
 
-        <div style={{ position: "relative", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, maxWidth: 560 }}>
+        <div style={{ position: "relative", display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12, maxWidth: 560 }}>
           {[
             { Icon: ScanLine, label: "AI receipt scanning" },
             { Icon: ShieldCheck, label: "Real-time policy checks" },
@@ -226,9 +245,9 @@ function AuthPage({ onAuth }) {
         </div>
       </div>
 
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 48, background: "radial-gradient(600px 380px at 80% 20%, rgba(132,204,22,0.10), transparent 68%), #0B0F19" }}>
-        <div style={{ width: 430, borderRadius: 18, padding: "28px 24px 24px", background: "linear-gradient(180deg, rgba(19,24,36,0.72) 0%, rgba(11,15,25,0.58) 100%)", border: "1px solid rgba(255,255,255,0.10)", backdropFilter: "blur(12px)", boxShadow: "0 14px 45px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08)" }}>
-          <h2 style={{ margin: "0 0 8px", fontSize: 32, fontWeight: 600, color: "#E5E7EB", letterSpacing: "0.01em", fontFamily: "'Playfair Display', Georgia, serif" }}>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? 16 : 48, background: "radial-gradient(600px 380px at 80% 20%, rgba(132,204,22,0.10), transparent 68%), #0B0F19" }}>
+        <div style={{ width: isMobile ? "100%" : 430, maxWidth: 430, borderRadius: 18, padding: isMobile ? "22px 16px 18px" : "28px 24px 24px", background: "linear-gradient(180deg, rgba(19,24,36,0.72) 0%, rgba(11,15,25,0.58) 100%)", border: "1px solid rgba(255,255,255,0.10)", backdropFilter: "blur(12px)", boxShadow: "0 14px 45px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08)" }}>
+          <h2 style={{ margin: "0 0 8px", fontSize: isMobile ? 28 : 32, fontWeight: 600, color: "#E5E7EB", letterSpacing: "0.01em", fontFamily: "'Playfair Display', Georgia, serif" }}>
             {mode === "login" ? "Welcome back" : "Create account"}
           </h2>
           <p style={{ margin: "0 0 24px", color: "#94A3B8", fontSize: 15 }}>
@@ -278,7 +297,7 @@ function AuthPage({ onAuth }) {
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
-function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate }) {
+function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile = false, onNavigate }) {
   const isFinance = profile?.role === "finance" || profile?.role === "manager"
   const [showProfileEditor, setShowProfileEditor] = useState(false)
   const [editName, setEditName] = useState(profile?.full_name || "")
@@ -350,12 +369,30 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate }) {
 
   return (
     <div style={{
-      width: 232, background: "#111114", borderRight: `1px solid ${THEME.border}`,
-      minHeight: "100vh", display: "flex", flexDirection: "column",
+      width: isMobile ? "min(88vw, 320px)" : 232,
+      background: "#111114",
+      borderRight: `1px solid ${THEME.border}`,
+      minHeight: "100vh",
+      height: "100vh",
+      display: "flex", flexDirection: "column",
+      position: isMobile ? "fixed" : "relative",
+      top: isMobile ? 0 : "auto",
+      left: isMobile ? 0 : "auto",
+      zIndex: isMobile ? 1200 : "auto",
       fontFamily: "'Segoe UI', system-ui, sans-serif"
     }}>
       {/* Logo */}
       <div style={{ padding: "20px 20px 16px", borderBottom: `1px solid ${THEME.border}` }}>
+        {isMobile && (
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            <button
+              onClick={onNavigate}
+              style={{ background: "transparent", border: `1px solid ${THEME.border}`, color: THEME.textSecond, borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontSize: 12 }}
+            >
+              Close
+            </button>
+          </div>
+        )}
         <div
           style={{
             display: "flex",
@@ -479,7 +516,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate }) {
               {group.label}
             </div>
             {group.items.map(item => (
-              <button key={item.id} onClick={() => setPage(item.id)} style={{
+              <button key={item.id} onClick={() => { setPage(item.id); onNavigate?.() }} style={{
                 width: "100%", padding: "8px 10px", border: "none", borderRadius: 6,
                 background: page === item.id ? "rgba(118,185,0,0.12)" : "transparent",
                 color: page === item.id ? "#76b900" : THEME.textSecond,
@@ -506,7 +543,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate }) {
 }
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
-function Dashboard({ profile, setPage, setCurrent }) {
+function Dashboard({ profile, setPage, setCurrent, isMobile = false }) {
   const [stats, setStats] = useState({ availableExpenses: 0, claims: 0, flaggedClaims: 0 })
   const [recentClaims, setRecentClaims] = useState([])
   const [loading, setLoading] = useState(true)
@@ -572,7 +609,7 @@ function Dashboard({ profile, setPage, setCurrent }) {
   ]
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: isMobile ? "16px 14px" : "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: THEME.textPrimary }}>
           {getISTGreeting()}, {profile?.full_name?.split(" ")[0] || "there"} 👋
@@ -582,7 +619,7 @@ function Dashboard({ profile, setPage, setCurrent }) {
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
         {cards.map(card => (
           <div key={card.label} onClick={() => setPage(card.page)}
             style={{
@@ -606,12 +643,12 @@ function Dashboard({ profile, setPage, setCurrent }) {
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 28 }}>
-        <button onClick={() => setPage("claims")} style={{ padding: "9px 18px", fontSize: 13, fontWeight: 700, ...primaryBtnStyle(false) }}>
+      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 10, marginBottom: 28 }}>
+        <button onClick={() => setPage("claims")} style={{ width: isMobile ? "100%" : "auto", padding: "9px 18px", fontSize: 13, fontWeight: 700, ...primaryBtnStyle(false) }}>
           + Create Expense Claim
         </button>
         <button onClick={() => setPage("expenses")} style={{
-          padding: "9px 18px", background: THEME.surface, color: THEME.textSecond,
+          width: isMobile ? "100%" : "auto", padding: "9px 18px", background: THEME.surface, color: THEME.textSecond,
           border: `1px solid ${THEME.border}`, borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", transition: "all 0.2s ease"
         }}>
           View Available Expenses
@@ -630,6 +667,19 @@ function Dashboard({ profile, setPage, setCurrent }) {
             <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: THEME.textPrimary, marginBottom: 4 }}>No expense claims yet</div>
             <div style={{ fontSize: 13, color: THEME.textMuted }}>Create your first expense claim to get started</div>
+          </div>
+        ) : isMobile ? (
+          <div style={{ padding: 12 }}>
+            {recentClaims.map(c => (
+              <div key={c.id}
+                onClick={() => { setCurrent(c); setPage("claimDetail") }}
+                style={{ border: `1px solid ${THEME.border}`, borderRadius: 10, padding: 12, marginBottom: 10, background: THEME.surfaceAlt, cursor: "pointer" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: THEME.textPrimary, marginBottom: 6 }}>{getClaimDisplayName(c)}</div>
+                <div style={{ fontSize: 12, color: THEME.textSecond, marginBottom: 4 }}>{formatClaimDate(c)}</div>
+                <div style={{ fontSize: 12, color: THEME.textPrimary, marginBottom: 8 }}>{c.currency || "USD"} {parseFloat(c.total_amount || 0).toFixed(2)}</div>
+                <StatusBadge status={c.status} />
+              </div>
+            ))}
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -663,7 +713,7 @@ function Dashboard({ profile, setPage, setCurrent }) {
 }
 
 // ─── Create Claim Modal ───────────────────────────────────────────────────────
-function CreateClaimModal({ profile, onClose, onCreate }) {
+function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
   // "choose" | "manual" | "scan"
   const [step, setStep] = useState("choose")
 
@@ -793,7 +843,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999
       }}>
-        <div style={{ background: "white", borderRadius: 12, width: 520, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "94vw" : 520, maxWidth: 520, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
           <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#111827" }}>Create Expense Claim</h2>
@@ -802,7 +852,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
             <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#9ca3af", lineHeight: 1 }}>✕</button>
           </div>
 
-          <div style={{ padding: 24, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div style={{ padding: 24, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
             {/* Manual option */}
             <button
               onClick={() => setStep("manual")}
@@ -851,7 +901,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999
       }}>
-        <div style={{ background: "white", borderRadius: 12, width: 580, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "94vw" : 580, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
           <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -873,7 +923,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
               error={errors.report_name}
             />
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 }}>Employee ID</label>
                 <input value={profile?.id?.slice(0,8) || "—"} disabled
@@ -893,7 +943,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
               error={errors.entity}
             />
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
               <Input
                 label="Business Unit"
                 value={form.business_unit} onChange={e => set("business_unit", e.target.value)}
@@ -946,7 +996,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
         position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999
       }}>
-        <div style={{ background: "white", borderRadius: 12, width: 640, maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "96vw" : 640, maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
           <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <button onClick={() => { setStep("choose"); setScanResult(null); setScanError("") }} style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: 13, padding: 0 }}>
@@ -959,7 +1009,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
           </div>
 
           <div style={{ padding: 24 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14, marginBottom: 14 }}>
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 }}>Employee</label>
                 <input value={profile?.full_name || ""} disabled style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#9ca3af" }} />
@@ -1029,7 +1079,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
                   <span style={{ fontSize: 12, color: "#6b7280" }}>Risk: <strong>{scanResult.risk_level || "Medium"}</strong></span>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
                   <div style={{ padding: 16, borderRight: "1px solid #f3f4f6" }}>
                     <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 700, marginBottom: 8 }}>RECEIPT</div>
                     {preview ? (
@@ -1090,7 +1140,7 @@ function CreateClaimModal({ profile, onClose, onCreate }) {
 }
 
 // ─── Claims List Page ─────────────────────────────────────────────────────────
-function ClaimsPage({ profile, setPage, setCurrent }) {
+function ClaimsPage({ profile, setPage, setCurrent, isMobile = false }) {
   const [claims, setClaims] = useState([])
   const [expenses, setExpenses] = useState([])
   const [loading, setLoading] = useState(true)
@@ -1129,16 +1179,17 @@ function ClaimsPage({ profile, setPage, setCurrent }) {
           profile={profile}
           onClose={() => setShowCreateClaim(false)}
           onCreate={handleCreateClaim}
+          isMobile={isMobile}
         />
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 12 : 0, justifyContent: "space-between", alignItems: isMobile ? "stretch" : "flex-start", marginBottom: 24 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: THEME.textPrimary }}>Expense Claims</h1>
           <p style={{ margin: "4px 0 0", color: THEME.textSecond, fontSize: 14 }}>Manage and track all your expense reports</p>
         </div>
         <button onClick={() => setShowCreateClaim(true)} style={{
-          padding: "9px 18px", fontSize: 13, fontWeight: 700,
+          width: isMobile ? "100%" : "auto", padding: "9px 18px", fontSize: 13, fontWeight: 700,
           display: "flex", alignItems: "center", gap: 6,
           ...primaryBtnStyle(false)
         }}>
@@ -1147,7 +1198,7 @@ function ClaimsPage({ profile, setPage, setCurrent }) {
       </div>
 
       {/* Status summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
         {[
           { label: "Total", value: claims.length, color: THEME.blue, accent: "rgba(77,166,255,0.2)" },
           { label: "Draft", value: claims.filter(c => c.status === "Draft").length, color: "#9ca3af", accent: "rgba(156,163,175,0.2)" },
@@ -1666,7 +1717,7 @@ function ClaimDetail({ claim, setPage, profile }) {
   }
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
+    <div style={{ padding: isMobile ? "16px 14px" : "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
       {showAddExpense && (
         <AddExpenseModal
           claimId={claim.id}
@@ -1806,6 +1857,25 @@ function ClaimDetail({ claim, setPage, profile }) {
               padding: "9px 18px", fontSize: 13, fontWeight: 700,
               ...primaryBtnStyle(false)
             }}>+ Add Expense</button>
+          </div>
+        ) : isMobile ? (
+          <div style={{ padding: 10 }}>
+            {claims.map(c => (
+              <div key={c.id} style={{ border: `1px solid ${THEME.border}`, borderRadius: 10, padding: 12, marginBottom: 10, background: THEME.surfaceAlt }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary, marginBottom: 5 }}>{c.report_name}</div>
+                <div style={{ fontSize: 12, color: THEME.textSecond, marginBottom: 3 }}>Entity: {c.entity || "—"}</div>
+                <div style={{ fontSize: 12, color: THEME.textSecond, marginBottom: 8 }}>Amount: {c.currency || "USD"} {parseFloat(c.total_amount || 0).toFixed(2)}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                  <StatusBadge status={c.status} />
+                  <button
+                    onClick={() => { setCurrent(c); setPage("claimDetail") }}
+                    style={{ padding: "6px 12px", background: THEME.blueDim, border: `1px solid ${THEME.border}`, color: THEME.blue, borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                  >
+                    Open →
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -2890,12 +2960,18 @@ function PolicyPage({ session, profile }) {
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export default function App() {
+  const isMobile = useIsMobile(900)
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [page, setPage] = useState("dashboard")
   const [currentClaim, setCurrentClaim] = useState(null)
   const [loading, setLoading] = useState(true)
   const [apiError, setApiError] = useState("")
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  useEffect(() => {
+    if (!isMobile) setMobileNavOpen(false)
+  }, [isMobile])
 
   const checkBackend = async () => {
     if (API_CONFIG_ERROR) {
@@ -3028,18 +3104,51 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", background: THEME.bg, color: THEME.textPrimary }}>
-      <Sidebar
-        page={page}
-        setPage={(p) => { setPage(p) }}
-        profile={profile}
-        onLogout={handleLogout}
-        onProfileUpdate={setProfile}
-      />
-      <div style={{ flex: 1, overflowY: "auto" }}>
-        {page === "dashboard"    && <Dashboard profile={profile} setPage={setPage} setCurrent={setCurrentClaim} />}
+      {!isMobile && (
+        <Sidebar
+          page={page}
+          setPage={(p) => { setPage(p) }}
+          profile={profile}
+          onLogout={handleLogout}
+          onProfileUpdate={setProfile}
+        />
+      )}
+
+      {isMobile && mobileNavOpen && (
+        <div
+          onClick={() => setMobileNavOpen(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.46)", zIndex: 1190 }}
+        />
+      )}
+      {isMobile && mobileNavOpen && (
+        <Sidebar
+          page={page}
+          setPage={(p) => { setPage(p) }}
+          profile={profile}
+          onLogout={handleLogout}
+          onProfileUpdate={setProfile}
+          isMobile
+          onNavigate={() => setMobileNavOpen(false)}
+        />
+      )}
+
+      <div style={{ flex: 1, overflowY: "auto", width: "100%" }}>
+        {isMobile && (
+          <div style={{ position: "sticky", top: 0, zIndex: 800, background: THEME.bg, borderBottom: `1px solid ${THEME.border}`, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <button
+              onClick={() => setMobileNavOpen(true)}
+              style={{ background: "transparent", border: `1px solid ${THEME.border}`, color: THEME.textPrimary, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontSize: 13 }}
+            >
+              ☰ Menu
+            </button>
+            <div style={{ fontWeight: 700, letterSpacing: "0.02em" }}><span style={{ color: "#E5E7EB" }}>AUDI</span><span style={{ color: "#84CC16" }}>XA</span></div>
+          </div>
+        )}
+
+        {page === "dashboard"    && <Dashboard profile={profile} setPage={setPage} setCurrent={setCurrentClaim} isMobile={isMobile} />}
         {page === "notifications" && <NotificationsPage />}
         {page === "tripPlanner"  && <TripPlannerPage profile={profile} />}
-        {page === "claims"       && <ClaimsPage profile={profile} setPage={setPage} setCurrent={setCurrentClaim} />}
+        {page === "claims"       && <ClaimsPage profile={profile} setPage={setPage} setCurrent={setCurrentClaim} isMobile={isMobile} />}
         {page === "submitExpense" && <SubmitExpensePage profile={profile} setPage={setPage} setCurrent={setCurrentClaim} />}
         {page === "claimDetail"  && currentClaim && <ClaimDetail claim={currentClaim} setPage={setPage} profile={profile} />}
         {page === "expenses"     && <AvailableExpensesPage />}
