@@ -17,6 +17,12 @@ import PyPDF2
 
 # ───────────────── CONFIG ─────────────────
 
+
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"message": "backend working"}
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
