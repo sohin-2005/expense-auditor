@@ -5,7 +5,8 @@ import { FileText, ClipboardList, AlertTriangle, ScanLine, ShieldCheck, BadgeChe
 
 const isLocalHost = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)
 const configuredApiUrl = (import.meta.env.VITE_API_URL || "").trim()
-const API = configuredApiUrl || (isLocalHost ? "http://127.0.0.1:8000" : "")
+const PROD_API_FALLBACK = "https://expense-auditor-4f7b.onrender.com"
+const API = configuredApiUrl || (isLocalHost ? "http://127.0.0.1:8000" : PROD_API_FALLBACK)
 const API_TIMEOUT_MS = 45000
 const API_CONFIG_ERROR = !API
   ? "Backend API is not configured. Set VITE_API_URL to your deployed backend URL in Vercel Project Settings and redeploy."
