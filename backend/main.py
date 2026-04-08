@@ -20,9 +20,12 @@ import PyPDF2
 
 app = FastAPI()
 
+
 @app.get("/")
 def home():
     return {"message": "backend working"}
+
+
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
@@ -59,12 +62,22 @@ _policy_cache = {}
 
 app = FastAPI(title="ExpenseFlow API")
 
+frontend_origins_env = os.getenv("FRONTEND_ORIGINS", "")
+extra_frontend_origins = [
+    o.strip() for o in frontend_origins_env.split(",") if o.strip()
+]
+default_frontend_origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+allowed_frontend_origins = list(dict.fromkeys(
+    default_frontend_origins + extra_frontend_origins
+))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=allowed_frontend_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
