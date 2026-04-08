@@ -3,7 +3,7 @@ import { supabase } from "./supabase"
 import axios from "axios"
 import { FileText, ClipboardList, AlertTriangle, ScanLine, ShieldCheck, BadgeCheck, ChartNoAxesColumn, Bell, RefreshCw, MapPin, CalendarDays, Briefcase, Plane, BedDouble, UtensilsCrossed, ShieldAlert, WandSparkles } from "lucide-react"
 
-const API = "http://127.0.0.1:8000"
+const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
 const BRAND_NAME = "Audixa"
 const BRAND_LOGO = "/audixa-logo.png?v=20260407"
 
