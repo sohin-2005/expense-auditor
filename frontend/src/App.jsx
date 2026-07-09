@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react"
 import { supabase } from "./supabase"
 import axios from "axios"
-import { FileText, ClipboardList, AlertTriangle, ScanLine, ShieldCheck, BadgeCheck, ChartNoAxesColumn, Bell, RefreshCw, MapPin, CalendarDays, Briefcase, Plane, BedDouble, UtensilsCrossed, ShieldAlert, WandSparkles } from "lucide-react"
+import { FileText, ClipboardList, AlertTriangle, ScanLine, ShieldCheck, BadgeCheck, ChartNoAxesColumn, Bell, RefreshCw, MapPin, CalendarDays, Briefcase, Plane, BedDouble, UtensilsCrossed, ShieldAlert, WandSparkles, LayoutGrid, Compass, Receipt, BarChart3, ScrollText, LogOut, Download, MessageCircleQuestion, CheckCircle2, WifiOff } from "lucide-react"
 
 const isLocalHost = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)
 const configuredApiUrl = (import.meta.env.VITE_API_URL || "").trim()
@@ -30,6 +30,10 @@ const THEME = {
   textPrimary: "#e8e8e8",
   textSecond: "#888",
   textMuted: "#555",
+  green: "#76b900",
+  greenDim: "rgba(118,185,0,0.10)",
+  red: "#ef4444",
+  redDim: "rgba(239,68,68,0.10)",
 }
 
 const primaryBtnStyle = (disabled = false) => ({
@@ -345,24 +349,25 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
     {
       label: "MAIN",
       items: [
-        { id: "dashboard", icon: "⊞", label: "Dashboard" },
-        { id: "notifications", icon: "🔔", label: "Notifications" },
-        { id: "tripPlanner", icon: "🧭", label: "Trip Planner" },
-        { id: "claims",    icon: "📋", label: "Expense Claims" },
-        { id: "expenses",  icon: "🧾", label: "Available Expenses" },
+        { id: "dashboard", Icon: LayoutGrid, label: "Dashboard" },
+        { id: "notifications", Icon: Bell, label: "Notifications" },
+        { id: "tripPlanner", Icon: Compass, label: "Trip Planner" },
+        { id: "claims",    Icon: ClipboardList, label: "Expense Claims" },
+        { id: "expenses",  Icon: Receipt, label: "Available Expenses" },
+        { id: "analytics", Icon: BarChart3, label: "Spend Analytics" },
       ]
     },
     ...(isFinance ? [{
       label: "MANAGEMENT",
       items: [
-        { id: "approvals", icon: "✅", label: "Approvals" },
-        { id: "finance",   icon: "📊", label: "Finance Dashboard" },
+        { id: "approvals", Icon: BadgeCheck, label: "Approvals" },
+        { id: "finance",   Icon: ChartNoAxesColumn, label: "Finance Dashboard" },
       ]
     }] : []),
     {
       label: "SETTINGS",
       items: [
-        { id: "policy", icon: "📜", label: "Company Policy" },
+        { id: "policy", Icon: ScrollText, label: "Company Policy" },
       ]
     }
   ]
@@ -521,9 +526,9 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
                 background: page === item.id ? "rgba(118,185,0,0.12)" : "transparent",
                 color: page === item.id ? "#76b900" : THEME.textSecond,
                 textAlign: "left", cursor: "pointer", fontSize: 13, fontWeight: page === item.id ? 600 : 400,
-                display: "flex", alignItems: "center", gap: 8, marginBottom: 1
+                display: "flex", alignItems: "center", gap: 9, marginBottom: 1
               }}>
-                <span style={{ fontSize: 14 }}>{item.icon}</span>
+                <item.Icon size={15} strokeWidth={page === item.id ? 2.2 : 1.7} />
                 {item.label}
               </button>
             ))}
@@ -536,7 +541,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
         border: `1px solid ${THEME.border}`, color: THEME.textSecond, borderRadius: 6,
         cursor: "pointer", fontSize: 13, textAlign: "left", display: "flex", alignItems: "center", gap: 8
       }}>
-        <span>↩</span> Sign Out
+        <LogOut size={14} strokeWidth={1.8} /> Sign Out
       </button>
     </div>
   )
@@ -612,7 +617,7 @@ function Dashboard({ profile, setPage, setCurrent, isMobile = false }) {
     <div style={{ padding: isMobile ? "16px 14px" : "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: THEME.textPrimary }}>
-          {getISTGreeting()}, {profile?.full_name?.split(" ")[0] || "there"} 👋
+          {getISTGreeting()}, {profile?.full_name?.split(" ")[0] || "there"}
         </h1>
         <p style={{ margin: "4px 0 0", color: THEME.textSecond, fontSize: 14 }}>
           Here's an overview of your expense activity.
@@ -664,7 +669,7 @@ function Dashboard({ profile, setPage, setCurrent, isMobile = false }) {
           <div style={{ padding: 32, textAlign: "center", color: THEME.textMuted, fontSize: 13 }}>Loading...</div>
         ) : recentClaims.length === 0 ? (
           <div style={{ padding: 48, textAlign: "center" }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>📋</div>
+            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center" }}><ClipboardList size={34} strokeWidth={1.3} color={THEME.textMuted} /></div>
             <div style={{ fontSize: 14, fontWeight: 600, color: THEME.textPrimary, marginBottom: 4 }}>No expense claims yet</div>
             <div style={{ fontSize: 13, color: THEME.textMuted }}>Create your first expense claim to get started</div>
           </div>
@@ -1032,7 +1037,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
                 {preview ? (
                   <img src={preview} alt="receipt" style={{ maxHeight: 160, borderRadius: 8, maxWidth: "100%" }} />
                 ) : file ? (
-                  <div style={{ fontSize: 13, color: "#1d4ed8", fontWeight: 600 }}>📄 {file.name}</div>
+                  <div style={{ fontSize: 13, color: "#1d4ed8", fontWeight: 600 }}>{file.name}</div>
                 ) : (
                   <div style={{ fontSize: 13, color: "#6b7280" }}>Click to upload receipt (JPG / PNG / PDF)</div>
                 )}
@@ -1059,7 +1064,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
               background: scanning ? "#93c5fd" : "#1d4ed8", color: "white",
               fontSize: 14, fontWeight: 700, cursor: scanning ? "not-allowed" : "pointer", marginBottom: 4
             }}>
-              {scanning ? "⏳ Processing with AI..." : "Submit & Run OCR + Policy Audit"}
+              {scanning ? "Processing with AI…" : "Submit & Run OCR + Policy Audit"}
             </button>
 
             {scanError && (
@@ -1240,7 +1245,7 @@ function ClaimsPage({ profile, setPage, setCurrent, isMobile = false }) {
           <div style={{ padding: 48, textAlign: "center", color: "#9ca3af" }}>Loading claims...</div>
         ) : claims.length === 0 ? (
           <div style={{ padding: 64, textAlign: "center" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
+            <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}><ClipboardList size={36} strokeWidth={1.3} color={THEME.textMuted} /></div>
             <div style={{ fontSize: 16, fontWeight: 600, color: "#374151", marginBottom: 6 }}>No expense claims</div>
             <div style={{ fontSize: 13, color: "#9ca3af", marginBottom: 20 }}>Create your first expense claim to get started</div>
             <button onClick={() => setShowCreateClaim(true)} style={{
@@ -1381,7 +1386,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
             {preview ? (
               <img src={preview} alt="receipt" style={{ maxHeight: 180, borderRadius: 8, maxWidth: "100%" }} />
             ) : file ? (
-              <div style={{ fontSize: 13, color: "#1d4ed8", fontWeight: 600 }}>📄 {file.name}</div>
+              <div style={{ fontSize: 13, color: "#1d4ed8", fontWeight: 600 }}>{file.name}</div>
             ) : (
               <div style={{ fontSize: 13, color: "#6b7280" }}>Click to upload receipt (JPG/PNG/PDF)</div>
             )}
@@ -1401,7 +1406,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
         </div>
 
         <button onClick={handleSubmit} disabled={loading} style={{ width: "100%", padding: 11, border: "none", borderRadius: 8, background: loading ? "#93c5fd" : "#1d4ed8", color: "white", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer" }}>
-          {loading ? "⏳ Processing with AI..." : "Submit & Run OCR + Policy Audit"}
+          {loading ? "Processing with AI…" : "Submit & Run OCR + Policy Audit"}
         </button>
 
         {error && <div style={{ marginTop: 12, padding: 10, borderRadius: 8, background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", fontSize: 13 }}>{error}</div>}
@@ -1570,7 +1575,7 @@ function AddExpenseModal({ claimId, profile, onClose, onAdd }) {
                   <img src={preview} alt="receipt" style={{ maxHeight: 200, borderRadius: 8, maxWidth: "100%" }} />
                 ) : (
                   <div>
-                    <div style={{ fontSize: 28, marginBottom: 8 }}>📎</div>
+                    <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}><FileText size={26} strokeWidth={1.4} color={THEME.textMuted} /></div>
                     <div style={{ fontSize: 13, color: THEME.textSecond }}>Click to upload receipt</div>
                     <div style={{ fontSize: 11, color: THEME.textMuted, marginTop: 4 }}>JPG, PNG, PDF supported</div>
                   </div>
@@ -1582,7 +1587,7 @@ function AddExpenseModal({ claimId, profile, onClose, onAdd }) {
                   width: "100%", padding: 10, ...primaryBtnStyle(scanning),
                   borderRadius: 6, fontSize: 13, fontWeight: 600
                 }}>
-                  {scanning ? "⏳ Scanning with AI..." : "🤖 Scan & Auto-fill"}
+                  {scanning ? "Scanning with AI…" : "Scan & Auto-fill"}
                 </button>
               )}
             </div>
@@ -1764,16 +1769,16 @@ function ClaimDetail({ claim, setPage, profile }) {
                 width: 200, zIndex: 100, overflow: "hidden"
               }}>
                 {[
-                  ["📷", "Scan Receipt", "scan"],
-                  ["✏️", "Manual Entry", "manual"],
-                  ["📋", "Available Expenses", "available"]
-                ].map(([icon, label, mode]) => (
+                  [ScanLine, "Scan Receipt", "scan"],
+                  [FileText, "Manual Entry", "manual"],
+                  [Receipt, "Available Expenses", "available"]
+                ].map(([MenuIcon, label, mode]) => (
                   <button key={mode} onClick={() => { setAddExpenseMode(mode); setShowAddExpense(true); setShowDropdown(false) }}
                     style={{ width: "100%", padding: "10px 14px", background: "none", border: "none", textAlign: "left", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${THEME.border}`, color: THEME.textPrimary }}
                     onMouseEnter={e => e.currentTarget.style.background = THEME.surfaceAlt}
                     onMouseLeave={e => e.currentTarget.style.background = "none"}
                   >
-                    <span>{icon}</span>{label}
+                    <MenuIcon size={14} strokeWidth={1.8} color={THEME.textSecond} />{label}
                   </button>
                 ))}
               </div>
@@ -1799,12 +1804,12 @@ function ClaimDetail({ claim, setPage, profile }) {
       {/* Summary boxes */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 24 }}>
         {[
-          { label: "Total Amount", value: `${currentClaim.currency || "USD"} ${total.toFixed(2)}`, icon: "💰" },
-          { label: "Expenses", value: `${expenses.length} item${expenses.length !== 1 ? "s" : ""}`, icon: "🧾" },
-          { label: "Submitted", value: currentClaim.created_at?.split("T")[0] || "—", icon: "📅" },
+          { label: "Total Amount", value: `${currentClaim.currency || "USD"} ${total.toFixed(2)}`, Icon: ChartNoAxesColumn },
+          { label: "Expenses", value: `${expenses.length} item${expenses.length !== 1 ? "s" : ""}`, Icon: Receipt },
+          { label: "Submitted", value: currentClaim.created_at?.split("T")[0] || "—", Icon: CalendarDays },
         ].map(s => (
           <div key={s.label} style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 10, padding: "16px 18px", boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 22 }}>{s.icon}</span>
+            <s.Icon size={20} strokeWidth={1.6} color={THEME.accent} />
             <div>
               <div style={{ fontSize: 11, color: THEME.textMuted }}>{s.label}</div>
               <div style={{ fontSize: 16, fontWeight: 700, color: THEME.textPrimary }}>{s.value}</div>
@@ -1821,7 +1826,7 @@ function ClaimDetail({ claim, setPage, profile }) {
         <div style={{ padding: "12px 16px" }}>
           {nonCompliant.length === 0 ? (
             <div style={{ fontSize: 13, color: "#065f46", background: "#ecfdf5", border: "1px solid #a7f3d0", padding: "10px 12px", borderRadius: 8 }}>
-              ✅ All expense items in this claim comply with your uploaded company policy.
+              All expense items in this claim comply with your uploaded company policy.
             </div>
           ) : (
             <div style={{ display: "grid", gap: 8 }}>
@@ -1850,7 +1855,7 @@ function ClaimDetail({ claim, setPage, profile }) {
           <div style={{ padding: 32, textAlign: "center", color: "#9ca3af" }}>Loading expenses...</div>
         ) : normalizedExpenses.length === 0 ? (
           <div style={{ padding: 64, textAlign: "center" }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>🧾</div>
+            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center" }}><Receipt size={34} strokeWidth={1.3} color={THEME.textMuted} /></div>
             <div style={{ fontSize: 14, fontWeight: 600, color: THEME.textPrimary, marginBottom: 4 }}>No expenses added yet</div>
             <div style={{ fontSize: 13, color: THEME.textMuted, marginBottom: 20 }}>Add expenses to this claim using the button above</div>
             <button onClick={() => setShowAddExpense(true)} style={{
@@ -1903,7 +1908,7 @@ function ClaimDetail({ claim, setPage, profile }) {
                   <td style={{ padding: "10px 14px" }}>
                     {exp.receiptUrl ? (
                       <a href={exp.receiptUrl} target="_blank" rel="noopener noreferrer"
-                        style={{ fontSize: 11, color: THEME.blue, textDecoration: "none" }}>View 📎</a>
+                        style={{ fontSize: 11, color: THEME.blue, textDecoration: "none" }}>View receipt</a>
                     ) : <span style={{ fontSize: 11, color: THEME.textMuted }}>None</span>}
                   </td>
                 </tr>,
@@ -2283,24 +2288,56 @@ function TripPlannerPage({ profile }) {
 function AvailableExpensesPage() {
   const [expenses, setExpenses] = useState([])
   const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
+  const [deletingId, setDeletingId] = useState(null)
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const token = await getToken()
-        const r = await axios.get(`${API}/expenses/available`, { headers: { Authorization: `Bearer ${token}` } })
-        setExpenses(r.data.expenses || [])
-      } catch (e) { console.error(e) }
-      setLoading(false)
-    }
-    load()
-  }, [])
+  const load = async () => {
+    try {
+      const token = await getToken()
+      const r = await axios.get(`${API}/expenses/available`, { headers: { Authorization: `Bearer ${token}` } })
+      setExpenses(r.data.expenses || [])
+    } catch (e) { console.error(e) }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [])
+
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      const token = await getToken()
+      const r = await axios.get(`${API}/expenses/export.csv`, {
+        headers: { Authorization: `Bearer ${token}` }, responseType: "blob", timeout: API_TIMEOUT_MS,
+      })
+      const url = URL.createObjectURL(new Blob([r.data], { type: "text/csv" }))
+      const a = document.createElement("a")
+      a.href = url; a.download = "audixa_expenses.csv"; a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { console.error(e) }
+    setExporting(false)
+  }
+
+  const removeExpense = async (id) => {
+    if (!window.confirm("Delete this expense? This cannot be undone.")) return
+    setDeletingId(id)
+    try {
+      const token = await getToken()
+      await axios.delete(`${API}/expenses/${id}`, { headers: { Authorization: `Bearer ${token}` } })
+      setExpenses(prev => prev.filter(e => e.id !== id))
+    } catch (e) { console.error(e) }
+    setDeletingId(null)
+  }
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: THEME.textPrimary }}>Available Expenses</h1>
-        <p style={{ margin: "4px 0 0", color: THEME.textSecond, fontSize: 14 }}>Expenses not yet attached to a claim</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 24 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: THEME.textPrimary }}>Available Expenses</h1>
+          <p style={{ margin: "4px 0 0", color: THEME.textSecond, fontSize: 14 }}>Expenses not yet attached to a claim</p>
+        </div>
+        <button onClick={exportCsv} disabled={exporting} style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 14px", fontSize: 13, fontWeight: 700, ...primaryBtnStyle(exporting) }}>
+          <Download size={14} strokeWidth={2} /> {exporting ? "Exporting…" : "Export CSV"}
+        </button>
       </div>
 
       <div style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
@@ -2308,7 +2345,7 @@ function AvailableExpensesPage() {
           <div style={{ padding: 48, textAlign: "center", color: THEME.textMuted }}>Loading...</div>
         ) : expenses.length === 0 ? (
           <div style={{ padding: 64, textAlign: "center" }}>
-            <div style={{ fontSize: 40, marginBottom: 12 }}>🧾</div>
+            <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}><Receipt size={36} strokeWidth={1.3} color={THEME.textMuted} /></div>
             <div style={{ fontSize: 14, fontWeight: 600, color: THEME.textPrimary, marginBottom: 4 }}>No available expenses</div>
             <div style={{ fontSize: 13, color: THEME.textMuted }}>All your expenses are attached to claims</div>
           </div>
@@ -2316,7 +2353,7 @@ function AvailableExpensesPage() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: THEME.surfaceAlt }}>
-                {["Type", "Date", "Vendor", "Amount", "Payment", "Purpose"].map(h => (
+                {["Type", "Date", "Vendor", "Amount", "Payment", "Purpose", ""].map(h => (
                   <th key={h} style={{ padding: "9px 14px", textAlign: "left", fontSize: 11, fontWeight: 600, color: THEME.textSecond, borderBottom: `1px solid ${THEME.border}` }}>{h}</th>
                 ))}
               </tr>
@@ -2342,6 +2379,15 @@ function AvailableExpensesPage() {
                     <td style={{ padding: "10px 14px", fontSize: 13, fontWeight: 600, color: THEME.textPrimary }}>{displayCurrency} {displayAmount}</td>
                     <td style={{ padding: "10px 14px", fontSize: 12, color: THEME.textSecond }}>{displayPayment}</td>
                     <td style={{ padding: "10px 14px", fontSize: 13, color: THEME.textSecond, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayPurpose}</td>
+                    <td style={{ padding: "10px 14px", textAlign: "right" }}>
+                      <button
+                        onClick={() => removeExpense(exp.id)}
+                        disabled={deletingId === exp.id}
+                        style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 6, border: "1px solid rgba(239,68,68,0.35)", background: "transparent", color: THEME.red, cursor: "pointer" }}
+                      >
+                        {deletingId === exp.id ? "…" : "Delete"}
+                      </button>
+                    </td>
                   </tr>
                 )
               })}
@@ -2607,7 +2653,7 @@ function ApprovalsPage() {
             <div style={{ padding: 48, textAlign: "center", color: THEME.textMuted }}>Loading...</div>
           ) : approvals.length === 0 ? (
             <div style={{ padding: 64, textAlign: "center" }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+              <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}><CheckCircle2 size={36} strokeWidth={1.3} color={THEME.green} /></div>
               <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>No records found</div>
               <div style={{ fontSize: 13, color: "#9ca3af" }}>No claims are waiting for approval</div>
             </div>
@@ -2828,9 +2874,9 @@ function FinanceDashboard({ session }) {
               <select value={overrideStatus} onChange={e => setOverrideStatus(e.target.value)}
                 style={{ width: "100%", padding: "8px 11px", border: `1px solid ${THEME.border}`, borderRadius: 6, fontSize: 13, marginBottom: 8, background: THEME.surfaceAlt, color: THEME.textPrimary }}>
                 <option value="">— Select new status —</option>
-                <option value="Approved">✅ Approve</option>
-                <option value="Pending Approval">⏳ Send for Review</option>
-                <option value="Rejected">❌ Reject</option>
+                <option value="Approved">Approve</option>
+                <option value="Pending Approval">Send for Review</option>
+                <option value="Rejected">Reject</option>
               </select>
               <textarea rows={2} placeholder="Reason for decision..." value={overrideComment} onChange={e => setOverrideComment(e.target.value)}
                 style={{ width: "100%", padding: "8px 11px", border: `1px solid ${THEME.border}`, borderRadius: 6, fontSize: 13, boxSizing: "border-box", marginBottom: 8, resize: "none", outline: "none", background: THEME.surfaceAlt, color: THEME.textPrimary }} />
@@ -2847,6 +2893,72 @@ function FinanceDashboard({ session }) {
 }
 
 // ─── Policy Page ──────────────────────────────────────────────────────────────
+function PolicyAskCard({ profile }) {
+  const [question, setQuestion] = useState("")
+  const [asking, setAsking] = useState(false)
+  const [answer, setAnswer] = useState(null)
+  const [error, setError] = useState("")
+
+  const ask = async () => {
+    const q = question.trim()
+    if (!q || asking) return
+    setAsking(true); setError(""); setAnswer(null)
+    try {
+      const token = await getToken()
+      const r = await axios.post(`${API}/policy/ask`,
+        { question: q, company_id: profile?.company_id || "default" },
+        { headers: { Authorization: `Bearer ${token}` }, timeout: API_TIMEOUT_MS })
+      setAnswer(r.data)
+    } catch (e) {
+      setError(e.response?.data?.detail || "Could not get an answer. Try again.")
+    }
+    setAsking(false)
+  }
+
+  const confidenceColor = { High: THEME.green, Medium: THEME.amber, Low: THEME.red }
+
+  return (
+    <div style={{ background: THEME.surface, borderRadius: 12, padding: 24, border: `1px solid ${THEME.border}`, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <MessageCircleQuestion size={17} strokeWidth={1.8} color={THEME.accent} />
+        <div style={{ fontSize: 15, fontWeight: 700, color: THEME.textPrimary }}>Ask the Policy</div>
+      </div>
+      <div style={{ fontSize: 12, color: THEME.textSecond, marginBottom: 14 }}>
+        Get instant answers grounded in your uploaded policy — before you spend.
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          value={question}
+          onChange={e => setQuestion(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && ask()}
+          placeholder='e.g. "What is the hotel limit for Mumbai?"'
+          style={{ flex: 1, padding: "10px 12px", fontSize: 13, border: `1px solid ${THEME.border}`, borderRadius: 8, background: THEME.surfaceAlt, color: THEME.textPrimary, outline: "none" }}
+        />
+        <button onClick={ask} disabled={asking || !question.trim()} style={{ padding: "10px 18px", fontSize: 13, fontWeight: 700, ...primaryBtnStyle(asking || !question.trim()) }}>
+          {asking ? "Thinking…" : "Ask"}
+        </button>
+      </div>
+      {error && <div style={{ marginTop: 12, padding: 12, background: THEME.redDim, border: "1px solid rgba(239,68,68,0.35)", borderRadius: 8, color: THEME.red, fontSize: 13 }}>{error}</div>}
+      {answer && (
+        <div style={{ marginTop: 14, padding: 16, background: THEME.surfaceAlt, borderRadius: 10, border: `1px solid ${THEME.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, gap: 10 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: THEME.textSecond, letterSpacing: "0.05em" }}>ANSWER</div>
+            <span style={{ fontSize: 11, fontWeight: 700, color: confidenceColor[answer.confidence] || THEME.textMuted }}>
+              Confidence: {answer.confidence}
+            </span>
+          </div>
+          <div style={{ fontSize: 14, color: THEME.textPrimary, lineHeight: 1.65 }}>{answer.answer}</div>
+          {answer.policy_snippet && (
+            <div style={{ marginTop: 12, padding: "10px 12px", borderLeft: `3px solid ${THEME.accent}`, background: THEME.accentDim, borderRadius: "0 8px 8px 0", fontSize: 12, color: THEME.textSecond, fontStyle: "italic" }}>
+              “{answer.policy_snippet}”
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PolicyPage({ session, profile }) {
   const [file, setFile] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -2905,7 +3017,7 @@ function PolicyPage({ session, profile }) {
 
       {existing && (
         <div style={{ background: THEME.greenDim, border: `1px solid ${THEME.border}`, borderRadius: 10, padding: "14px 18px", marginBottom: 24, display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 24 }}>📄</span>
+          <FileText size={22} strokeWidth={1.6} color={THEME.green} />
           <div>
             <div style={{ fontWeight: 700, color: THEME.green, fontSize: 14 }}>Active Policy: {existing.file_name}</div>
             <div style={{ fontSize: 12, color: THEME.textSecond }}>Uploaded {new Date(existing.uploaded_at).toLocaleDateString()}</div>
@@ -2919,10 +3031,10 @@ function PolicyPage({ session, profile }) {
           style={{ border: `2px dashed ${THEME.border}`, borderRadius: 8, padding: 36, textAlign: "center", cursor: "pointer", background: THEME.surfaceAlt, marginBottom: 16 }}
         >
           {file ? (
-            <div style={{ color: THEME.blue, fontWeight: 600 }}>📄 {file.name}</div>
+            <div style={{ color: THEME.blue, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}><FileText size={16} strokeWidth={1.8} /> {file.name}</div>
           ) : (
             <div>
-              <div style={{ fontSize: 28, marginBottom: 8 }}>📎</div>
+              <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}><FileText size={28} strokeWidth={1.4} color={THEME.textMuted} /></div>
               <div style={{ fontSize: 13, color: THEME.textSecond }}>Click to upload Policy PDF</div>
               <div style={{ fontSize: 11, color: THEME.textMuted, marginTop: 4 }}>PDF files only</div>
             </div>
@@ -2933,20 +3045,22 @@ function PolicyPage({ session, profile }) {
         <button onClick={handleUpload} disabled={loading} style={{
           width: "100%", padding: 12, ...primaryBtnStyle(loading), borderRadius: 8, fontSize: 14, fontWeight: 600
         }}>
-          {loading ? "⏳ Processing..." : "Upload Policy"}
+          {loading ? "Processing…" : "Upload Policy"}
         </button>
 
         {error && <div style={{ marginTop: 12, padding: 12, background: THEME.redDim, border: `1px solid ${THEME.border}`, borderRadius: 6, color: THEME.red, fontSize: 13 }}>{error}</div>}
         {result && (
           <div style={{ marginTop: 12, padding: 14, background: THEME.greenDim, borderRadius: 8, border: `1px solid ${THEME.border}` }}>
-            <div style={{ fontWeight: 700, color: THEME.green, marginBottom: 4 }}>✅ Policy uploaded!</div>
+            <div style={{ fontWeight: 700, color: THEME.green, marginBottom: 4, display: "flex", alignItems: "center", gap: 7 }}><CheckCircle2 size={15} strokeWidth={2} /> Policy uploaded</div>
             <div style={{ fontSize: 12, color: THEME.textSecond }}>Extracted {result.characters?.toLocaleString()} characters</div>
           </div>
         )}
       </div>
 
+      <PolicyAskCard profile={profile} />
+
       <div style={{ padding: "14px 16px", background: THEME.surfaceAlt, borderRadius: 8, border: `1px solid ${THEME.border}` }}>
-        <div style={{ fontWeight: 700, color: THEME.textPrimary, marginBottom: 6, fontSize: 13 }}>💡 How it works</div>
+        <div style={{ fontWeight: 700, color: THEME.textPrimary, marginBottom: 6, fontSize: 13 }}>How it works</div>
         <div style={{ fontSize: 12, color: THEME.textSecond, lineHeight: 1.7 }}>
           1. Upload your Travel & Expense Policy PDF<br />
           2. AI extracts and indexes all policy rules<br />
@@ -2954,6 +3068,143 @@ function PolicyPage({ session, profile }) {
           4. AI cites the exact rule when approving, flagging, or rejecting claims
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Spend Analytics Page ─────────────────────────────────────────────────────
+function AnalyticsPage({ profile, isMobile = false }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
+  const [exporting, setExporting] = useState(false)
+  const isFinance = profile?.role === "finance" || profile?.role === "manager"
+  const [scope, setScope] = useState("my")
+
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      setLoading(true); setError("")
+      try {
+        const token = await getToken()
+        const r = await axios.get(`${API}/analytics/summary?scope=${scope}`, {
+          headers: { Authorization: `Bearer ${token}` }, timeout: API_TIMEOUT_MS,
+        })
+        if (!cancelled) setData(r.data)
+      } catch (e) {
+        if (!cancelled) setError(e.response?.data?.detail || "Could not load analytics.")
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [scope])
+
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      const token = await getToken()
+      const r = await axios.get(`${API}/expenses/export.csv`, {
+        headers: { Authorization: `Bearer ${token}` }, responseType: "blob", timeout: API_TIMEOUT_MS,
+      })
+      const url = URL.createObjectURL(new Blob([r.data], { type: "text/csv" }))
+      const a = document.createElement("a")
+      a.href = url; a.download = "audixa_expenses.csv"; a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { console.error(e) }
+    setExporting(false)
+  }
+
+  const card = (label, value, sub, color) => (
+    <div key={label} style={{ background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 12, padding: "18px 20px" }}>
+      <div style={{ fontSize: 12, color: THEME.textSecond, marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 800, color: color || THEME.textPrimary }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: THEME.textMuted, marginTop: 4 }}>{sub}</div>}
+    </div>
+  )
+
+  const BarList = ({ title, items, color }) => {
+    const max = Math.max(...items.map(i => i.amount), 1)
+    return (
+      <div style={{ background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 12, padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary, marginBottom: 14 }}>{title}</div>
+        {items.length === 0 && <div style={{ fontSize: 13, color: THEME.textMuted }}>No data yet.</div>}
+        {items.map(item => (
+          <div key={item.name || item.month} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+              <span style={{ color: THEME.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "70%" }}>{item.name || item.month}</span>
+              <span style={{ color: THEME.textSecond, fontWeight: 600 }}>{item.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+            <div style={{ height: 7, borderRadius: 4, background: THEME.surfaceAlt, overflow: "hidden" }}>
+              <div style={{ width: `${Math.max((item.amount / max) * 100, 2)}%`, height: "100%", borderRadius: 4, background: color, transition: "width 0.4s ease" }} />
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ padding: isMobile ? "16px 14px" : "28px 32px", maxWidth: 1100, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 24 }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: THEME.textPrimary }}>Spend Analytics</h1>
+          <p style={{ margin: "4px 0 0", color: THEME.textSecond, fontSize: 14 }}>Compliance and spend insights across your expenses</p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {isFinance && (
+            <select value={scope} onChange={e => setScope(e.target.value)} style={{ padding: "8px 11px", fontSize: 13, border: `1px solid ${THEME.border}`, borderRadius: 8, background: THEME.surface, color: THEME.textPrimary }}>
+              <option value="my">My expenses</option>
+              <option value="all">All employees</option>
+            </select>
+          )}
+          <button onClick={exportCsv} disabled={exporting} style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 14px", fontSize: 13, fontWeight: 700, ...primaryBtnStyle(exporting) }}>
+            <Download size={14} strokeWidth={2} /> {exporting ? "Exporting…" : "Export CSV"}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 60, textAlign: "center", color: THEME.textMuted, fontSize: 13 }}>Loading analytics…</div>
+      ) : error ? (
+        <div style={{ padding: 16, borderRadius: 10, background: THEME.redDim, border: "1px solid rgba(239,68,68,0.35)", color: THEME.red, fontSize: 13 }}>{error}</div>
+      ) : data && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: 14, marginBottom: 22 }}>
+            {card("Total Expenses", data.total_expenses, "All recorded items")}
+            {card("Total Spend", data.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2 }), "Across all currencies", THEME.blue)}
+            {card("Compliance Rate", `${data.compliance_rate}%`, "Approved on first audit", data.compliance_rate >= 70 ? THEME.green : THEME.amber)}
+            {card("Flagged / Rejected", (data.by_status.Flagged || 0) + (data.by_status.Rejected || 0), "Need attention", THEME.red)}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16, marginBottom: 16 }}>
+            <BarList title="Spend by Category" items={data.top_categories} color="linear-gradient(90deg, #76b900, #a3e635)" />
+            <BarList title="Top Vendors" items={data.top_vendors} color="linear-gradient(90deg, #2563eb, #4da6ff)" />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
+            <BarList title="Monthly Spend Trend" items={data.monthly} color="linear-gradient(90deg, #7c3aed, #a78bfa)" />
+            <div style={{ background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 12, padding: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary, marginBottom: 14 }}>Audit Outcomes</div>
+              {["Approved", "Flagged", "Rejected"].map(s => {
+                const count = data.by_status[s] || 0
+                const amount = data.status_amounts[s] || 0
+                const colors = { Approved: THEME.green, Flagged: THEME.amber, Rejected: THEME.red }
+                return (
+                  <div key={s} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${THEME.border}` }}>
+                    <StatusBadge status={s} />
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: colors[s] }}>{count}</div>
+                      <div style={{ fontSize: 11, color: THEME.textMuted }}>{amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -2973,44 +3224,65 @@ export default function App() {
     if (!isMobile) setMobileNavOpen(false)
   }, [isMobile])
 
-  const checkBackend = async () => {
-    if (API_CONFIG_ERROR) {
-      setApiError(API_CONFIG_ERROR)
-      return
-    }
+  // "checking" | "waking" | "ok" | "down" | "degraded"
+  const [apiStatus, setApiStatus] = useState("checking")
 
+  const checkBackend = async () => {
+    setApiStatus("checking")
+    setApiError("")
     try {
-      await axios.get(`${API}/health`, { timeout: API_TIMEOUT_MS })
-      setApiError("")
+      const r = await axios.get(`${API}/health`, { timeout: API_TIMEOUT_MS })
+      if (r.data?.status === "degraded") {
+        setApiStatus("degraded")
+        setApiError(`Backend is running but misconfigured: ${(r.data.boot_errors || []).join(" ")}`)
+      } else {
+        setApiStatus("ok")
+      }
     } catch {
-      setApiError(`Cannot reach backend at ${API}. Check backend deployment and CORS settings.`)
+      setApiStatus("down")
+      setApiError(`Cannot reach backend at ${API}.`)
     }
   }
 
   useEffect(() => {
+    if (API_CONFIG_ERROR) {
+      setApiStatus("down")
+      setApiError(API_CONFIG_ERROR)
+      return
+    }
+
     let cancelled = false
-
+    // Free-tier backends (Render) sleep after inactivity and can take up to
+    // ~60s to wake. Retry with backoff instead of blocking the whole app.
     const verifyApi = async () => {
-      if (API_CONFIG_ERROR) {
-        if (!cancelled) setApiError(API_CONFIG_ERROR)
-        return
-      }
-
-      try {
-        await axios.get(`${API}/health`, { timeout: API_TIMEOUT_MS })
-        if (!cancelled) setApiError("")
-      } catch {
-        if (!cancelled) {
-          setApiError(`Cannot reach backend at ${API}. Check backend deployment and CORS settings.`)
+      const MAX_ATTEMPTS = 6
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS && !cancelled; attempt++) {
+        try {
+          const r = await axios.get(`${API}/health`, { timeout: API_TIMEOUT_MS })
+          if (cancelled) return
+          if (r.data?.status === "degraded") {
+            setApiStatus("degraded")
+            setApiError(`Backend is running but misconfigured: ${(r.data.boot_errors || []).join(" ")}`)
+          } else {
+            setApiStatus("ok")
+            setApiError("")
+          }
+          return
+        } catch {
+          if (cancelled) return
+          if (attempt < MAX_ATTEMPTS) {
+            setApiStatus("waking")
+            await new Promise(res => setTimeout(res, 8000))
+          } else {
+            setApiStatus("down")
+            setApiError(`Cannot reach backend at ${API}. Check that the backend service is deployed and running.`)
+          }
         }
       }
     }
 
     verifyApi()
-
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -3080,27 +3352,34 @@ export default function App() {
     </div>
   )
 
-  if (apiError) {
-    return (
-      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter, system-ui, sans-serif", background: THEME.bg, color: THEME.textPrimary, padding: 24 }}>
-        <div style={{ maxWidth: 760, width: "100%", background: THEME.surface, border: `1px solid ${THEME.border}`, borderRadius: 14, padding: 20 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Backend connection issue</div>
-          <div style={{ fontSize: 14, color: THEME.textSecond, lineHeight: 1.6, marginBottom: 12 }}>{apiError}</div>
-          <div style={{ fontSize: 12, color: THEME.textMuted, marginBottom: 14 }}>
-            Active API URL: {API || "(empty)"}
-          </div>
-          <div style={{ fontSize: 13, color: THEME.textSecond, lineHeight: 1.6 }}>
-            Quick fix: set <b>VITE_API_URL</b> to your backend base URL (for example: <b>https://your-backend-domain.com</b>) and redeploy frontend.
-          </div>
-          <button onClick={checkBackend} style={{ marginTop: 14, padding: "8px 12px", borderRadius: 8, border: `1px solid ${THEME.border}`, background: THEME.surfaceAlt, color: THEME.textPrimary, cursor: "pointer", fontWeight: 600 }}>
-            Retry backend check
-          </button>
-        </div>
-      </div>
-    )
-  }
+  const apiBanner = (apiStatus === "waking" || apiStatus === "down" || apiStatus === "degraded") && (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+      padding: "9px 16px", fontSize: 13,
+      background: apiStatus === "waking" ? "rgba(245,158,11,0.10)" : THEME.redDim,
+      borderBottom: `1px solid ${apiStatus === "waking" ? "rgba(245,158,11,0.35)" : "rgba(239,68,68,0.35)"}`,
+      color: apiStatus === "waking" ? THEME.amber : THEME.red,
+    }}>
+      <WifiOff size={14} strokeWidth={1.8} />
+      {apiStatus === "waking" ? (
+        <span>Connecting to server — free-tier backends can take up to a minute to wake. Retrying automatically…</span>
+      ) : (
+        <span>{apiError} <span style={{ color: THEME.textMuted }}>({API})</span></span>
+      )}
+      {apiStatus !== "waking" && (
+        <button onClick={checkBackend} style={{ marginLeft: "auto", padding: "3px 10px", borderRadius: 6, border: `1px solid ${THEME.border}`, background: THEME.surfaceAlt, color: THEME.textPrimary, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+          Retry
+        </button>
+      )}
+    </div>
+  )
 
-  if (!session) return <AuthPage onAuth={(user, sess, prof) => { setSession(sess); setProfile(prof) }} />
+  if (!session) return (
+    <div>
+      {apiBanner}
+      <AuthPage onAuth={(user, sess, prof) => { setSession(sess); setProfile(prof) }} />
+    </div>
+  )
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", fontFamily: "'Segoe UI', system-ui, -apple-system, sans-serif", background: THEME.bg, color: THEME.textPrimary }}>
@@ -3133,6 +3412,7 @@ export default function App() {
       )}
 
       <div style={{ flex: 1, overflowY: "auto", width: "100%" }}>
+        {apiBanner}
         {isMobile && (
           <div style={{ position: "sticky", top: 0, zIndex: 800, background: THEME.bg, borderBottom: `1px solid ${THEME.border}`, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <button
@@ -3152,6 +3432,7 @@ export default function App() {
         {page === "submitExpense" && <SubmitExpensePage profile={profile} setPage={setPage} setCurrent={setCurrentClaim} />}
         {page === "claimDetail"  && currentClaim && <ClaimDetail claim={currentClaim} setPage={setPage} profile={profile} />}
         {page === "expenses"     && <AvailableExpensesPage />}
+        {page === "analytics"    && <AnalyticsPage profile={profile} isMobile={isMobile} />}
         {page === "approvals"    && <ApprovalsPage />}
         {page === "finance"      && <FinanceDashboard session={session} />}
         {page === "policy"       && <PolicyPage session={session} profile={profile} />}

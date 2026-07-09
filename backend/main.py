@@ -17,15 +17,6 @@ import PyPDF2
 
 # ───────────────── CONFIG ─────────────────
 
-
-app = FastAPI()
-
-
-@app.get("/")
-def home():
-    return {"message": "backend working"}
-
-
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
@@ -36,8 +27,51 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Boot must never crash because of missing env vars — otherwise the whole
+# deployment goes down and the frontend just sees "cannot reach backend".
+# Clients are created defensively and /health reports what is misconfigured.
+BOOT_ERRORS = []
+
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        BOOT_ERRORS.append(f"Supabase client init failed: {e}")
+else:
+    BOOT_ERRORS.append(
+        "Missing SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY environment variables.")
+
+groq_client = None
+if GROQ_API_KEY:
+    try:
+        groq_client = Groq(api_key=GROQ_API_KEY)
+    except Exception as e:
+        BOOT_ERRORS.append(f"Groq client init failed: {e}")
+else:
+    BOOT_ERRORS.append("Missing GROQ_API_KEY environment variable.")
+
+
+def db():
+    return require_supabase()
+
+
+def require_supabase():
+    if supabase is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Database not configured on server. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
+        )
+    return supabase
+
+
+def require_groq():
+    if groq_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AI provider not configured on server. Set GROQ_API_KEY."
+        )
+    return groq_client
 
 OCR_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 AUDIT_MODEL = "llama-3.1-8b-instant"
@@ -60,7 +94,17 @@ GROQ_TIMEOUT_SECONDS = float(os.getenv("GROQ_TIMEOUT_SECONDS", "25"))
 POLICY_CACHE_TTL_SECONDS = 300
 _policy_cache = {}
 
-app = FastAPI(title="ExpenseFlow API")
+app = FastAPI(title="Audixa API", version="2.0.0")
+
+
+@app.get("/")
+def home():
+    return {
+        "service": "Audixa API",
+        "status": "ok" if not BOOT_ERRORS else "degraded",
+        "docs": "/docs",
+    }
+
 
 frontend_origins_env = os.getenv("FRONTEND_ORIGINS", "")
 extra_frontend_origins = [
@@ -108,7 +152,7 @@ async def get_current_user(authorization: str = Header(None)):
         raise HTTPException(401, "Missing token")
     token = authorization.split(" ")[1]
     try:
-        user = supabase.auth.get_user(token)
+        user = require_supabase().auth.get_user(token)
         return user.user
     except:
         raise HTTPException(401, "Invalid token")
@@ -133,7 +177,7 @@ def extract_text_from_pdf(pdf_bytes: bytes, max_pages: int = 40, max_chars: int 
 def get_policy_record(company_id: str):
     try:
         res = (
-            supabase.table("policies")
+            db().table("policies")
             .select("*")
             .eq("company_id", company_id)
             .order("uploaded_at", desc=True)
@@ -233,11 +277,12 @@ def safe_json_loads(raw_text: str):
 
 def call_groq_json(messages, model: str, max_tokens: int, temperature: float = 0, retries: int = 2):
     last_err = None
+    base_client = require_groq()
     for attempt in range(retries + 1):
         try:
-            client = groq_client
-            if hasattr(groq_client, "with_options"):
-                client = groq_client.with_options(timeout=GROQ_TIMEOUT_SECONDS)
+            client = base_client
+            if hasattr(base_client, "with_options"):
+                client = base_client.with_options(timeout=GROQ_TIMEOUT_SECONDS)
 
             resp = client.chat.completions.create(
                 model=model,
@@ -331,7 +376,7 @@ def insert_expense_with_schema_fallback(expense: dict):
     payload = dict(expense)
     for _ in range(12):
         try:
-            return supabase.table("expenses").insert(payload).execute()
+            return db().table("expenses").insert(payload).execute()
         except Exception as e:
             msg = str(e)
             missing_col = None
@@ -354,7 +399,7 @@ def insert_claim_with_schema_fallback(claim: dict):
     payload = dict(claim)
     for _ in range(12):
         try:
-            return supabase.table("claims").insert(payload).execute()
+            return db().table("claims").insert(payload).execute()
         except Exception as e:
             msg = str(e)
             missing_col = None
@@ -377,7 +422,7 @@ def insert_travel_plan_with_schema_fallback(plan: dict):
     payload = dict(plan)
     for _ in range(16):
         try:
-            return supabase.table("travel_plans").insert(payload).execute()
+            return db().table("travel_plans").insert(payload).execute()
         except Exception as e:
             msg = str(e)
             missing_col = None
@@ -633,17 +678,71 @@ def compose_reason(audit: dict, amount: float, currency: str, category: str):
     return "This expense needs policy review due to missing or unclear policy-matching details."
 
 
+def find_potential_duplicate(employee_id: str, vendor: str, amount, tx_date: str):
+    """Detect a likely duplicate: same user, same amount (±0.01), same vendor or same date."""
+    try:
+        amt = float(amount or 0)
+        if amt <= 0:
+            return None
+        rows = (
+            db().table("expenses")
+            .select("id,vendor_name,merchant_name,amount,transaction_date,date,created_at")
+            .eq("employee_id", str(employee_id))
+            .order("created_at", desc=True)
+            .limit(120)
+            .execute().data or []
+        )
+        v = str(vendor or "").strip().lower()
+        d = str(tx_date or "").strip()[:10]
+        for r in rows:
+            r_amt = float(r.get("amount") or 0)
+            if abs(r_amt - amt) > 0.01:
+                continue
+            r_vendor = str(r.get("vendor_name") or r.get(
+                "merchant_name") or "").strip().lower()
+            r_date = str(r.get("transaction_date")
+                         or r.get("date") or "").strip()[:10]
+            vendor_match = bool(v and r_vendor and v == r_vendor)
+            date_match = bool(d and r_date and d == r_date)
+            if vendor_match and (date_match or not d):
+                return r
+            if vendor_match and date_match:
+                return r
+        return None
+    except Exception:
+        return None
+
+
+def apply_duplicate_check(expense: dict):
+    """If a likely duplicate exists, flag the expense and annotate the reason."""
+    dup = find_potential_duplicate(
+        expense.get("employee_id"),
+        expense.get("vendor_name") or expense.get("merchant_name"),
+        expense.get("amount"),
+        expense.get("transaction_date") or expense.get("date"),
+    )
+    if dup:
+        expense["status"] = "Flagged"
+        expense["risk_level"] = "High"
+        expense["reason"] = (
+            "Possible duplicate: an expense with the same vendor and amount already exists. "
+            + str(expense.get("reason") or "")
+        ).strip()
+        expense["duplicate_of"] = dup.get("id")
+    return expense
+
+
 def sync_claim_status_totals(claim_id: str):
     if not claim_id:
         return None
 
-    exp_res = supabase.table("expenses").select(
+    exp_res = db().table("expenses").select(
         "amount,status,reason").eq("claim_id", claim_id).execute()
     items = exp_res.data or []
     total = sum(float(e.get("amount") or 0) for e in items)
     claim_status = derive_claim_status(items)
 
-    updated = supabase.table("claims").update({
+    updated = db().table("claims").update({
         "status": claim_status,
         "total_amount": total,
     }).eq("id", claim_id).execute()
@@ -661,7 +760,7 @@ def enrich_claims_with_ai_summary(claims: list):
 
     try:
         exp_res = (
-            supabase.table("expenses")
+            db().table("expenses")
             .select("claim_id,status,reason,policy_snippet,amount,currency,expense_type,vendor_name")
             .in_("claim_id", claim_ids)
             .execute()
@@ -743,7 +842,7 @@ async def upload_policy(file: UploadFile = File(...), company_id: str = Form("de
         )
 
     now_iso = datetime.utcnow().isoformat()
-    supabase.table("policies").upsert({
+    db().table("policies").upsert({
         "company_id": company_id,
         "policy_text": text,
         "file_name": file.filename,
@@ -933,7 +1032,7 @@ async def generate_trip_plan(payload: dict = Body(...), user=Depends(get_current
 async def my_trip_plans(user=Depends(get_current_user)):
     try:
         res = (
-            supabase.table("travel_plans")
+            db().table("travel_plans")
             .select("*")
             .eq("employee_id", str(user.id))
             .order("created_at", desc=True)
@@ -1112,10 +1211,12 @@ Rules:
             "created_at": datetime.utcnow().isoformat()
         }
 
+        expense = apply_duplicate_check(expense)
+        duplicate_of = expense.pop("duplicate_of", None)
         insert_expense_with_schema_fallback(expense)
         if claim_id:
             sync_claim_status_totals(claim_id)
-        return {"success": True, "data": expense}
+        return {"success": True, "data": expense, "duplicate_of": duplicate_of}
 
     except HTTPException:
         raise
@@ -1155,7 +1256,7 @@ async def my_claims(limit: int = 0, offset: int = 0, user=Depends(get_current_us
     limit, offset = sanitize_paging(limit, offset)
 
     def build_base_query():
-        q = supabase.table("claims").select(
+        q = db().table("claims").select(
             "*").eq("employee_id", str(user.id))
         if limit > 0:
             q = q.range(offset, offset + limit - 1)
@@ -1185,25 +1286,25 @@ async def my_claims(limit: int = 0, offset: int = 0, user=Depends(get_current_us
 @app.get("/claims")
 async def all_claims(user=Depends(get_current_user)):
     try:
-        res = supabase.table("claims").select(
+        res = db().table("claims").select(
             "*").order("created_at", desc=True).execute()
     except Exception:
         try:
-            res = supabase.table("claims").select(
+            res = db().table("claims").select(
                 "*").order("id", desc=True).execute()
         except Exception:
-            res = supabase.table("claims").select("*").execute()
+            res = db().table("claims").select("*").execute()
     return {"claims": enrich_claims_with_ai_summary(res.data or [])}
 
 
 @app.post("/claims/{claim_id}/submit")
 async def submit_claim(claim_id: str, user=Depends(get_current_user)):
-    res = supabase.table("expenses").select(
+    res = db().table("expenses").select(
         "amount,status,reason").eq("claim_id", claim_id).execute()
     total = sum(float(e["amount"]) for e in res.data)
     claim_status = derive_claim_status(res.data)
 
-    updated = supabase.table("claims").update({
+    updated = db().table("claims").update({
         "status": claim_status,
         "total_amount": total,
         "submitted_at": datetime.utcnow().isoformat()
@@ -1229,7 +1330,7 @@ async def override_claim(
         "override_comment": comment or None,
         "overridden_at": datetime.utcnow().isoformat()
     }
-    res = supabase.table("claims").update(payload).eq("id", claim_id).execute()
+    res = db().table("claims").update(payload).eq("id", claim_id).execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="Claim not found")
 
@@ -1310,16 +1411,18 @@ async def add_expense(
         "created_at": datetime.utcnow().isoformat()
     }
 
+    expense = apply_duplicate_check(expense)
+    duplicate_of = expense.pop("duplicate_of", None)
     res = insert_expense_with_schema_fallback(expense)
     if claim_id:
         sync_claim_status_totals(claim_id)
-    return {"expense": res.data[0]}
+    return {"expense": res.data[0], "duplicate_of": duplicate_of}
 
 
 @app.get("/expenses")
 async def list_expenses(claim_id: str = "", limit: int = 0, offset: int = 0, user=Depends(get_current_user)):
     limit, offset = sanitize_paging(limit, offset)
-    q = supabase.table("expenses").select("*").eq("employee_id", str(user.id))
+    q = db().table("expenses").select("*").eq("employee_id", str(user.id))
     if claim_id:
         q = q.eq("claim_id", claim_id)
     if limit > 0:
@@ -1352,7 +1455,7 @@ async def list_expenses(claim_id: str = "", limit: int = 0, offset: int = 0, use
 @app.get("/expenses/available")
 async def available_expenses(limit: int = 0, offset: int = 0, user=Depends(get_current_user)):
     limit, offset = sanitize_paging(limit, offset)
-    q = supabase.table("expenses").select(
+    q = db().table("expenses").select(
         "*").eq("employee_id", str(user.id)).is_("claim_id", "null")
     if limit > 0:
         q = q.range(offset, offset + limit - 1)
@@ -1383,12 +1486,12 @@ async def available_expenses(limit: int = 0, offset: int = 0, user=Depends(get_c
 
 @app.post("/expenses/{expense_id}/attach")
 async def attach_expense(expense_id: str, claim_id: str = Form(...), user=Depends(get_current_user)):
-    existing = supabase.table("expenses").select(
+    existing = db().table("expenses").select(
         "id,employee_id").eq("id", expense_id).single().execute()
     if not existing.data or existing.data.get("employee_id") != str(user.id):
         raise HTTPException(status_code=404, detail="Expense not found")
 
-    res = supabase.table("expenses").update(
+    res = db().table("expenses").update(
         {"claim_id": claim_id}).eq("id", expense_id).execute()
     sync_claim_status_totals(claim_id)
     return {"expense": res.data[0] if res.data else {"id": expense_id, "claim_id": claim_id}}
@@ -1398,7 +1501,7 @@ async def attach_expense(expense_id: str, claim_id: str = Form(...), user=Depend
 
 @app.get("/approvals")
 async def approvals(user=Depends(get_current_user)):
-    res = supabase.table("claims").select(
+    res = db().table("claims").select(
         "*").eq("status", "Pending Approval").execute()
     return {"approvals": res.data}
 
@@ -1407,4 +1510,200 @@ async def approvals(user=Depends(get_current_user)):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok" if not BOOT_ERRORS else "degraded",
+        "supabase_configured": supabase is not None,
+        "groq_configured": groq_client is not None,
+        "boot_errors": BOOT_ERRORS,
+        "time": datetime.utcnow().isoformat(),
+    }
+
+# ───────────────── ANALYTICS ─────────────────
+
+
+@app.get("/analytics/summary")
+async def analytics_summary(scope: str = "my", user=Depends(get_current_user)):
+    """Spend analytics: totals by status/category/month, top vendors, compliance rate."""
+    q = db().table("expenses").select(
+        "amount,currency,status,reason,expense_type,category,vendor_name,merchant_name,transaction_date,date,created_at"
+    )
+    if scope != "all":
+        q = q.eq("employee_id", str(user.id))
+
+    try:
+        rows = q.execute().data or []
+    except Exception:
+        rows = []
+
+    by_status = {"Approved": 0, "Flagged": 0, "Rejected": 0}
+    status_amounts = {"Approved": 0.0, "Flagged": 0.0, "Rejected": 0.0}
+    by_category = {}
+    by_month = {}
+    by_vendor = {}
+    total = 0.0
+
+    for r in rows:
+        amt = float(r.get("amount") or 0)
+        total += amt
+        st = resolve_expense_status(
+            r.get("status"), reason=r.get("reason"), amount=amt)
+        if st not in by_status:
+            st = "Flagged"
+        by_status[st] += 1
+        status_amounts[st] += amt
+
+        cat = (r.get("expense_type") or r.get("category")
+               or "Uncategorized").strip().title()
+        by_category[cat] = by_category.get(cat, 0.0) + amt
+
+        raw_date = r.get("transaction_date") or r.get(
+            "date") or r.get("created_at") or ""
+        month = str(raw_date)[:7] if raw_date else "Unknown"
+        by_month[month] = by_month.get(month, 0.0) + amt
+
+        vendor = (r.get("vendor_name") or r.get(
+            "merchant_name") or "Unknown").strip()
+        by_vendor[vendor] = by_vendor.get(vendor, 0.0) + amt
+
+    count = len(rows)
+    compliance_rate = round(
+        100 * by_status["Approved"] / count) if count else 0
+
+    top_categories = sorted(by_category.items(),
+                            key=lambda x: x[1], reverse=True)[:8]
+    top_vendors = sorted(by_vendor.items(),
+                         key=lambda x: x[1], reverse=True)[:8]
+    monthly = sorted(
+        [(k, v) for k, v in by_month.items() if k != "Unknown"])[-12:]
+
+    return {
+        "total_expenses": count,
+        "total_amount": round(total, 2),
+        "compliance_rate": compliance_rate,
+        "by_status": by_status,
+        "status_amounts": {k: round(v, 2) for k, v in status_amounts.items()},
+        "top_categories": [{"name": k, "amount": round(v, 2)} for k, v in top_categories],
+        "top_vendors": [{"name": k, "amount": round(v, 2)} for k, v in top_vendors],
+        "monthly": [{"month": k, "amount": round(v, 2)} for k, v in monthly],
+    }
+
+
+@app.get("/expenses/export.csv")
+async def export_expenses_csv(user=Depends(get_current_user)):
+    """Download the current user's expenses as a CSV file."""
+    try:
+        rows = (
+            db().table("expenses").select("*")
+            .eq("employee_id", str(user.id))
+            .order("created_at", desc=True)
+            .execute().data or []
+        )
+    except Exception:
+        rows = []
+
+    cols = ["transaction_date", "expense_type", "vendor_name", "city",
+            "amount", "currency", "payment_type", "business_purpose",
+            "invoice_number", "status", "risk_level", "reason", "claim_id", "created_at"]
+
+    def esc(v):
+        s = "" if v is None else str(v)
+        if any(c in s for c in [",", '"', "\n"]):
+            s = '"' + s.replace('"', '""') + '"'
+        return s
+
+    lines = [",".join(cols)]
+    for r in rows:
+        r["status"] = resolve_expense_status(
+            r.get("status"), reason=r.get("reason"), amount=r.get("amount"))
+        r["vendor_name"] = r.get("vendor_name") or r.get("merchant_name")
+        r["transaction_date"] = r.get("transaction_date") or r.get("date")
+        r["expense_type"] = r.get("expense_type") or r.get("category")
+        lines.append(",".join(esc(r.get(c)) for c in cols))
+
+    csv_text = "\n".join(lines)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=audixa_expenses.csv"},
+    )
+
+# ───────────────── POLICY Q&A ─────────────────
+
+
+@app.post("/policy/ask")
+async def ask_policy(payload: dict = Body(...), user=Depends(get_current_user)):
+    """Ask a natural-language question about the company expense policy."""
+    question = str(payload.get("question") or "").strip()
+    company_id = str(payload.get("company_id") or "default").strip() or "default"
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    if len(question) > 600:
+        question = question[:600]
+
+    policy_text = get_policy(company_id)
+    policy_context = get_policy_context(
+        policy_text, {"business_purpose": question})
+
+    prompt = f"""You are a company expense policy assistant. Answer the employee's question using ONLY the policy text below.
+
+Policy:
+{policy_context}
+
+Question: {question}
+
+Return JSON only with keys:
+answer (concise, business-readable, max 4 sentences),
+policy_snippet (the most relevant quoted policy line, or null),
+confidence (one of: High, Medium, Low)
+
+If the policy does not cover the question, say so clearly and set confidence to Low."""
+
+    try:
+        result = call_groq_json(
+            messages=[{"role": "user", "content": prompt}],
+            model=AUDIT_MODEL,
+            max_tokens=260,
+            temperature=0,
+            retries=AUDIT_RETRIES,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=503, detail="Policy assistant is temporarily unavailable. Try again shortly.")
+
+    return {
+        "answer": str(result.get("answer") or "The policy does not clearly address this question."),
+        "policy_snippet": result.get("policy_snippet"),
+        "confidence": str(result.get("confidence") or "Low"),
+    }
+
+# ───────────────── EXPENSE MANAGEMENT EXTRAS ─────────────────
+
+
+@app.delete("/expenses/{expense_id}")
+async def delete_expense(expense_id: str, user=Depends(get_current_user)):
+    existing = db().table("expenses").select(
+        "id,employee_id,claim_id").eq("id", expense_id).single().execute()
+    if not existing.data or existing.data.get("employee_id") != str(user.id):
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    claim_id = existing.data.get("claim_id")
+    db().table("expenses").delete().eq("id", expense_id).execute()
+    if claim_id:
+        sync_claim_status_totals(claim_id)
+    return {"success": True, "deleted": expense_id}
+
+
+@app.post("/expenses/{expense_id}/detach")
+async def detach_expense(expense_id: str, user=Depends(get_current_user)):
+    existing = db().table("expenses").select(
+        "id,employee_id,claim_id").eq("id", expense_id).single().execute()
+    if not existing.data or existing.data.get("employee_id") != str(user.id):
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    claim_id = existing.data.get("claim_id")
+    res = db().table("expenses").update(
+        {"claim_id": None}).eq("id", expense_id).execute()
+    if claim_id:
+        sync_claim_status_totals(claim_id)
+    return {"expense": res.data[0] if res.data else {"id": expense_id, "claim_id": None}}
