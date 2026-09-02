@@ -8,3 +8,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Scratch state for subagent-driven plan execution (ledgers, briefs, reports)
+.superpowers/
