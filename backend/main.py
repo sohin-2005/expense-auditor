@@ -15,6 +15,8 @@ import re
 import time
 import PyPDF2
 
+import ai_provider
+
 # ───────────────── CONFIG ─────────────────
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1513,7 +1515,7 @@ def health():
     return {
         "status": "ok" if not BOOT_ERRORS else "degraded",
         "supabase_configured": supabase is not None,
-        "groq_configured": groq_client is not None,
+        "ai_providers": ai_provider.describe_providers(),
         "boot_errors": BOOT_ERRORS,
         "time": datetime.utcnow().isoformat(),
     }

@@ -238,3 +238,42 @@ def call_ai_json(
     if not chain:
         failures.append(f"no provider configured for task={task}")
     raise AIUnavailableError(task, failures)
+
+
+def describe_providers(config: AIConfig | None = None) -> list[dict]:
+    cfg = config or get_config()
+    rows = [{"name": s.name, "model": s.model, "task": TEXT} for s in cfg.text_chain]
+    rows += [{"name": s.name, "model": s.model, "task": VISION} for s in cfg.vision_chain]
+    return rows
+
+
+def check_models(
+    config: AIConfig | None = None,
+    client_factory: Callable[[ProviderSpec], Any] | None = None,
+) -> list[str]:
+    """Warn about configured models the account cannot actually reach.
+
+    Provider catalogs drift. Surfacing that at boot beats discovering it as a
+    500 mid-upload, which is how the Groq deprecation went unnoticed.
+    """
+    cfg = config or get_config()
+    factory = client_factory or _default_client_factory
+
+    warnings: list[str] = []
+    catalogs: dict[str, set[str]] = {}
+
+    for spec in list(cfg.text_chain) + list(cfg.vision_chain):
+        if spec.name not in catalogs:
+            try:
+                client = factory(spec)
+                catalogs[spec.name] = {m.id for m in client.models.list()}
+            except Exception as e:
+                warnings.append(f"could not read {spec.name} model catalog: {e}")
+                catalogs[spec.name] = set()
+                continue
+        available = catalogs[spec.name]
+        if available and spec.model not in available:
+            warnings.append(
+                f"{spec.name} model {spec.model!r} is not in the account's catalog"
+            )
+    return warnings

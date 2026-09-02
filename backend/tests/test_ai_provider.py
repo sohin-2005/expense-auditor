@@ -223,3 +223,45 @@ def test_unknown_task_is_rejected():
         call_ai_json([{"role": "user", "content": "x"}], task="audio",
                      max_tokens=50, config=_cfg([GEMINI], [GEMINI_V]),
                      client_factory=factory)
+
+
+from ai_provider import check_models, describe_providers
+
+
+class _StubModels:
+    def __init__(self, ids):
+        self._ids = ids
+
+    def list(self):
+        return [type("_M", (), {"id": i})() for i in self._ids]
+
+
+class _CatalogClient:
+    def __init__(self, ids):
+        self.models = _StubModels(ids)
+
+
+def test_describe_providers_lists_each_task_and_model():
+    rows = describe_providers(_cfg([GEMINI, GROQ], [GEMINI_V]))
+    assert {"name": "gemini", "model": "gm", "task": TEXT} in rows
+    assert {"name": "groq", "model": "qm", "task": TEXT} in rows
+    assert {"name": "gemini", "model": "gv", "task": VISION} in rows
+
+
+def test_check_models_is_silent_when_every_model_is_reachable():
+    factory = lambda spec: _CatalogClient(["gm", "qm", "gv"])
+    assert check_models(_cfg([GEMINI, GROQ], [GEMINI_V]), factory) == []
+
+
+def test_check_models_warns_about_a_missing_model():
+    factory = lambda spec: _CatalogClient(["qm", "gv"])
+    warnings = check_models(_cfg([GEMINI, GROQ], [GEMINI_V]), factory)
+    assert len(warnings) == 1
+    assert "gm" in warnings[0]
+
+
+def test_check_models_warns_when_catalog_cannot_be_read():
+    def factory(spec):
+        raise RuntimeError("network down")
+    warnings = check_models(_cfg([GEMINI], [GEMINI_V]), factory)
+    assert warnings and "network down" in warnings[0]
