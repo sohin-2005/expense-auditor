@@ -51,6 +51,18 @@ else:
     BOOT_ERRORS.append(
         "Missing SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY environment variables.")
 
+# A deployment with neither GEMINI_API_KEY nor GROQ_API_KEY set has zero AI
+# capability -- permanent and operator-fixable, exactly like a missing
+# Supabase credential, so it belongs in BOOT_ERRORS. This is deliberately
+# narrower than MODEL_WARNINGS (populated below at startup): a transient
+# catalog-read failure must not flip /health to "degraded" on its own, but
+# "no provider configured at all" is known at import time and should.
+_ai_config = ai_provider.get_config()
+if not _ai_config.text_chain and not _ai_config.vision_chain:
+    BOOT_ERRORS.append(
+        "No AI provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY "
+        "environment variables.")
+
 
 def db():
     return require_supabase()
