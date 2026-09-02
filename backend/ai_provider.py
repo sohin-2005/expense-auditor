@@ -9,8 +9,14 @@ outage this module was written to fix.
 """
 from __future__ import annotations
 
+import json
+import logging
+import re
+import time
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Callable, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 TEXT = "text"
 VISION = "vision"
@@ -95,3 +101,61 @@ def load_config(env: Mapping[str, str]) -> AIConfig:
         timeout_seconds=float(env.get("AI_TIMEOUT_SECONDS") or _DEFAULT_TIMEOUT_SECONDS),
         retries=int(env.get("AI_RETRIES") or _DEFAULT_RETRIES),
     )
+
+
+def safe_json_loads(raw_text: str) -> dict:
+    """Parse a model's JSON reply, tolerating prose wrapped around it."""
+    if not raw_text:
+        return {}
+    try:
+        return json.loads(raw_text)
+    except Exception:
+        m = re.search(r"\{[\s\S]*\}", raw_text)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                return {}
+    return {}
+
+
+def _default_client_factory(spec: ProviderSpec):
+    from openai import OpenAI
+    return OpenAI(api_key=spec.api_key, base_url=spec.base_url)
+
+
+def complete_json(
+    spec: ProviderSpec,
+    messages: Sequence[dict],
+    max_tokens: int,
+    temperature: float,
+    timeout_seconds: float,
+    retries: int,
+    client_factory: Callable[[ProviderSpec], Any] = _default_client_factory,
+) -> dict:
+    """One provider, with retries. Raises the last error if every attempt fails."""
+    client = client_factory(spec)
+    last_err: Exception | None = None
+
+    for attempt in range(retries + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=spec.model,
+                messages=list(messages),
+                response_format={"type": "json_object"},
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout_seconds,
+            )
+            parsed = safe_json_loads(resp.choices[0].message.content)
+            if isinstance(parsed, dict) and parsed:
+                return parsed
+            raise ValueError(f"{spec.name}/{spec.model} returned empty or invalid JSON")
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(0.45 * (attempt + 1))
+                continue
+            break
+
+    raise last_err
