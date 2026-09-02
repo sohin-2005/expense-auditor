@@ -267,6 +267,29 @@ def test_check_models_warns_when_catalog_cannot_be_read():
     assert warnings and "network down" in warnings[0]
 
 
+def test_check_models_treats_models_prefix_as_same_model():
+    """Gemini's /models endpoint returns IDs like 'models/gemini-3.5-flash',
+    but chat/completions requires -- and we correctly configure -- the bare
+    form. A naive membership test warns on every healthy boot; comparison
+    must normalize the 'models/' prefix away.
+    """
+    factory = lambda spec: _CatalogClient(["models/gm", "models/qm", "models/gv"])
+    assert check_models(_cfg([GEMINI, GROQ], [GEMINI_V]), factory) == []
+
+
+def test_check_models_still_warns_about_a_genuinely_missing_model_with_prefixed_catalog():
+    factory = lambda spec: _CatalogClient(["models/other-model"])
+    warnings = check_models(_cfg([GEMINI], []), factory)
+    assert len(warnings) == 1
+    assert "gm" in warnings[0]
+
+
+def test_check_models_warns_when_no_provider_is_configured():
+    warnings = check_models(_cfg([], []))
+    assert warnings
+    assert "no ai provider" in warnings[0].lower()
+
+
 def test_catalog_client_factory_uses_a_short_explicit_timeout(monkeypatch):
     """The catalog probe must fail fast, not inherit the SDK's 600s default.
 

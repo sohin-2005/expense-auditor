@@ -271,6 +271,20 @@ def describe_providers(config: AIConfig | None = None) -> list[dict]:
     return rows
 
 
+def _normalize_model_id(model_id: str) -> str:
+    """Normalize a model id for catalog comparison only.
+
+    Gemini's /models endpoint returns ids like 'models/gemini-3.5-flash',
+    but chat/completions requires -- and we correctly configure and send --
+    the bare form. Comparing the raw catalog id against the configured name
+    warns on every healthy boot, which trains readers to ignore the log line
+    the next real deprecation needs. This never touches what gets sent to
+    the API; it only normalizes both sides of the comparison.
+    """
+    prefix = "models/"
+    return model_id[len(prefix):] if model_id.startswith(prefix) else model_id
+
+
 def check_models(
     config: AIConfig | None = None,
     client_factory: Callable[[ProviderSpec], Any] | None = None,
@@ -281,6 +295,10 @@ def check_models(
     500 mid-upload, which is how the Groq deprecation went unnoticed.
     """
     cfg = config or get_config()
+
+    if not cfg.text_chain and not cfg.vision_chain:
+        return ["no AI provider is configured: set GEMINI_API_KEY and/or GROQ_API_KEY"]
+
     factory = client_factory or _catalog_client_factory
 
     warnings: list[str] = []
@@ -290,13 +308,16 @@ def check_models(
         if spec.name not in catalogs:
             try:
                 client = factory(spec)
-                catalogs[spec.name] = {m.id for m in client.models.list()}
+                catalogs[spec.name] = {
+                    _normalize_model_id(m.id) for m in client.models.list()
+                }
             except Exception as e:
                 warnings.append(f"could not read {spec.name} model catalog: {e}")
                 catalogs[spec.name] = set()
                 continue
         available = catalogs[spec.name]
-        if available and spec.model not in available:
+        configured = _normalize_model_id(spec.model)
+        if available and configured not in available:
             warnings.append(
                 f"{spec.name} model {spec.model!r} is not in the account's catalog"
             )
