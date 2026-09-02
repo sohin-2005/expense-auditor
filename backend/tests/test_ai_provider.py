@@ -265,3 +265,24 @@ def test_check_models_warns_when_catalog_cannot_be_read():
         raise RuntimeError("network down")
     warnings = check_models(_cfg([GEMINI], [GEMINI_V]), factory)
     assert warnings and "network down" in warnings[0]
+
+
+def test_catalog_client_factory_uses_a_short_explicit_timeout(monkeypatch):
+    """The catalog probe must fail fast, not inherit the SDK's 600s default.
+
+    A bad model against this same Gemini endpoint has hung past 120-180s in
+    this project before -- boot cannot be left exposed to that. Stubs out
+    openai.OpenAI so no real client or network call is involved; this only
+    checks what the catalog factory passes when constructing a client.
+    """
+    captured = {}
+
+    class _StubOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("openai.OpenAI", _StubOpenAI)
+    ai_provider._catalog_client_factory(SPEC)
+
+    assert captured["timeout"] == ai_provider.CATALOG_CHECK_TIMEOUT_SECONDS
+    assert ai_provider.CATALOG_CHECK_TIMEOUT_SECONDS == 5.0

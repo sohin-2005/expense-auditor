@@ -39,6 +39,13 @@ _DEFAULT_GROQ_TEXT_MODEL = "qwen/qwen3.8-27b"
 _DEFAULT_TIMEOUT_SECONDS = 45.0
 _DEFAULT_RETRIES = 1
 
+# The catalog probe in check_models() is a boot-time health check, not a
+# user-facing completion, so it must fail fast rather than block startup.
+# Earlier in this project, a bad model against this same Gemini endpoint
+# hung past 120-180s with no response, and the OpenAI SDK's own default
+# timeout is 600s -- far too long to sit in front of a deploy.
+CATALOG_CHECK_TIMEOUT_SECONDS = 5.0
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -123,6 +130,23 @@ def safe_json_loads(raw_text: str) -> dict:
 def _default_client_factory(spec: ProviderSpec):
     from openai import OpenAI
     return OpenAI(api_key=spec.api_key, base_url=spec.base_url)
+
+
+def _catalog_client_factory(spec: ProviderSpec):
+    """Default client factory for check_models()'s catalog probe only.
+
+    Deliberately separate from _default_client_factory: user-facing
+    completions need the longer AIConfig.timeout_seconds (45s, with vision
+    measured at ~10-12s), but a boot-time catalog read has no business
+    taking more than a few seconds -- so it gets its own short, explicit
+    timeout instead of inheriting the SDK's 600s default.
+    """
+    from openai import OpenAI
+    return OpenAI(
+        api_key=spec.api_key,
+        base_url=spec.base_url,
+        timeout=CATALOG_CHECK_TIMEOUT_SECONDS,
+    )
 
 
 def complete_json(
@@ -257,7 +281,7 @@ def check_models(
     500 mid-upload, which is how the Groq deprecation went unnoticed.
     """
     cfg = config or get_config()
-    factory = client_factory or _default_client_factory
+    factory = client_factory or _catalog_client_factory
 
     warnings: list[str] = []
     catalogs: dict[str, set[str]] = {}
