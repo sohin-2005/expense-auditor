@@ -11,11 +11,14 @@ import os
 import base64
 import json
 import io
+import logging
 import re
 import time
 import PyPDF2
 
 import ai_provider
+
+logger = logging.getLogger(__name__)
 
 # ───────────────── CONFIG ─────────────────
 
@@ -33,6 +36,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # deployment goes down and the frontend just sees "cannot reach backend".
 # Clients are created defensively and /health reports what is misconfigured.
 BOOT_ERRORS = []
+
+# Populated by the startup catalog check below. Kept separate from
+# BOOT_ERRORS: a transient catalog-read failure is not the same as a missing
+# credential, and must not flip /health's "status" to "degraded".
+MODEL_WARNINGS = []
 
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -97,6 +105,25 @@ POLICY_CACHE_TTL_SECONDS = 300
 _policy_cache = {}
 
 app = FastAPI(title="Audixa API", version="2.0.0")
+
+
+@app.on_event("startup")
+def _check_ai_model_catalog():
+    """Warn loudly at boot if a configured model has fallen out of the
+    account's catalog -- the failure mode that took the app down last time,
+    surfaced here instead of as a 500 mid-upload.
+
+    Must never block startup: a catalog-read failure (network blip, provider
+    outage) is not a reason to refuse to serve traffic, so any exception is
+    swallowed and recorded as a warning rather than raised.
+    """
+    global MODEL_WARNINGS
+    try:
+        MODEL_WARNINGS = ai_provider.check_models()
+    except Exception as e:
+        MODEL_WARNINGS = [f"model catalog check failed unexpectedly: {e}"]
+    for warning in MODEL_WARNINGS:
+        logger.warning("AI model catalog warning: %s", warning)
 
 
 @app.get("/")
@@ -1516,6 +1543,7 @@ def health():
         "status": "ok" if not BOOT_ERRORS else "degraded",
         "supabase_configured": supabase is not None,
         "ai_providers": ai_provider.describe_providers(),
+        "model_warnings": MODEL_WARNINGS,
         "boot_errors": BOOT_ERRORS,
         "time": datetime.utcnow().isoformat(),
     }
