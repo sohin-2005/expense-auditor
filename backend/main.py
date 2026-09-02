@@ -74,12 +74,12 @@ def require_groq():
     return groq_client
 
 OCR_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-AUDIT_MODEL = "llama-3.1-8b-instant"
+AUDIT_MODEL = "qwen/qwen3.8-27b"
 
 FAST_MODE = os.getenv("EXPENSE_AUDIT_FAST_MODE", "1").strip().lower() in {
     "1", "true", "yes", "on"}
 
-OCR_MAX_TOKENS = 220 if FAST_MODE else 280
+OCR_MAX_TOKENS = 350 if FAST_MODE else 420
 AUDIT_MAX_TOKENS = 170 if FAST_MODE else 220
 TRIP_MAX_TOKENS = 650 if FAST_MODE else 900
 
