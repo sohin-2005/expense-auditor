@@ -308,4 +308,7 @@ def test_catalog_client_factory_uses_a_short_explicit_timeout(monkeypatch):
     ai_provider._catalog_client_factory(SPEC)
 
     assert captured["timeout"] == ai_provider.CATALOG_CHECK_TIMEOUT_SECONDS
-    assert ai_provider.CATALOG_CHECK_TIMEOUT_SECONDS == 5.0
+    # The SDK's default max_retries=2 would silently triple the timeout
+    # above (plus backoff) across the boot-time catalog probe -- the exact
+    # exposure this factory exists to close. Must be pinned to zero.
+    assert captured["max_retries"] == 0

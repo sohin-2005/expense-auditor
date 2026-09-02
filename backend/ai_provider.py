@@ -146,6 +146,12 @@ def _catalog_client_factory(spec: ProviderSpec):
         api_key=spec.api_key,
         base_url=spec.base_url,
         timeout=CATALOG_CHECK_TIMEOUT_SECONDS,
+        # The SDK default (max_retries=2) would multiply the timeout above by
+        # up to 3 attempts plus backoff -- ~30s worst case across two
+        # providers, exactly the boot-blocking exposure this factory exists
+        # to close. The probe is best-effort and already retried on the next
+        # boot, so zero retries here is correct.
+        max_retries=0,
     )
 
 
