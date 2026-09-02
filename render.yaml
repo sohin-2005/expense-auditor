@@ -16,6 +16,8 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: GEMINI_API_KEY
+        sync: false # required for image receipts -- vision has no fallback provider
       - key: FRONTEND_ORIGINS
         sync: false # e.g. https://your-app.vercel.app,https://yourdomain.com
       - key: PYTHON_VERSION

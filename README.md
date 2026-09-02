@@ -42,18 +42,33 @@ cd expense-auditor
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install fastapi uvicorn python-multipart python-dotenv groq supabase PyPDF2 pillow
+pip install -r requirements.txt
 ```
 
 Create `backend/.env`:
 
 ```env
+# Required for image receipts -- vision (image) tasks go to Gemini only and
+# have no fallback provider. Without this, /health reports "degraded" and
+# every image receipt upload fails with a 503.
+GEMINI_API_KEY=your_gemini_api_key
+
+# Used as the fallback for text-only tasks (receipt text, audits, trip
+# planning). Optional, but text tasks have no fallback without it either.
 GROQ_API_KEY=your_groq_api_key
+
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 EXPENSE_AUDIT_FAST_MODE=1
-GROQ_TIMEOUT_SECONDS=25
+
+# Optional overrides (see backend/ai_provider.py's load_config for defaults)
+# GEMINI_TEXT_MODEL=
+# GEMINI_VISION_MODEL=
+# AI_PRIMARY_PROVIDER=groq   # try Groq before Gemini for text tasks
+# GROQ_TEXT_MODEL=
+# AI_TIMEOUT_SECONDS=
+# AI_RETRIES=
 ```
 
 Run backend:
