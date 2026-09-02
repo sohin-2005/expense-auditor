@@ -1179,9 +1179,25 @@ Rules:
 
     except HTTPException:
         raise
+    except AIUnavailableError as e:
+        # A provider outage is not the caller's fault and is not permanent.
+        # Say so precisely; a generic 500 sent users hunting for bugs that
+        # were never in their receipt.
+        logger.error("receipt AI unavailable task=%s failures=%s", e.task, e.failures)
+        if e.task == VISION:
+            detail = ("Image scanning is temporarily unavailable — please try "
+                      "again shortly, or upload a PDF receipt.")
+        else:
+            detail = ("Receipt processing is temporarily unavailable — please "
+                      "try again shortly.")
+        raise HTTPException(status_code=503, detail=detail)
     except Exception as e:
+        # Genuinely unexpected. Log the detail server-side; do not leak
+        # internals such as database constraint names to the client.
+        logger.exception("receipt processing failed")
         raise HTTPException(
-            status_code=500, detail=f"Receipt processing failed: {str(e)}")
+            status_code=500,
+            detail="Receipt processing failed unexpectedly. Please try again.")
 
 # ───────────────── CLAIMS ─────────────────
 
