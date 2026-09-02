@@ -106,9 +106,53 @@ def load_config(env: Mapping[str, str]) -> AIConfig:
     return AIConfig(
         text_chain=text_chain,
         vision_chain=vision_chain,
-        timeout_seconds=float(env.get("AI_TIMEOUT_SECONDS") or _DEFAULT_TIMEOUT_SECONDS),
-        retries=int(env.get("AI_RETRIES") or _DEFAULT_RETRIES),
+        timeout_seconds=_parse_float(
+            "AI_TIMEOUT_SECONDS", env.get("AI_TIMEOUT_SECONDS"), _DEFAULT_TIMEOUT_SECONDS
+        ),
+        retries=_parse_int("AI_RETRIES", env.get("AI_RETRIES"), _DEFAULT_RETRIES),
     )
+
+
+def _parse_float(name: str, raw: str | None, default: float) -> float:
+    """Parse an optional numeric env var, falling back to `default` on any
+    bad value instead of raising.
+
+    load_config() runs at import time (backend/main.py imports ai_provider
+    and reads get_config() at module scope), so an unguarded float()/int()
+    here would turn a typo'd env var into a crashed boot -- exactly what
+    BOOT_ERRORS exists to avoid. A malformed override degrading to the
+    documented default, with a logged warning, is the correct failure mode.
+    """
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a valid number; falling back to default %s",
+            name, raw, default,
+        )
+        return default
+
+
+def _parse_int(name: str, raw: str | None, default: int) -> int:
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a valid integer; falling back to default %s",
+            name, raw, default,
+        )
+        return default
+    if value < 0:
+        logger.warning(
+            "%s=%r is negative, which would break the retry loop; falling back to default %s",
+            name, raw, default,
+        )
+        return default
+    return value
 
 
 def safe_json_loads(raw_text: str) -> dict:

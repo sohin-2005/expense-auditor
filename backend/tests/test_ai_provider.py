@@ -46,6 +46,53 @@ def test_primary_provider_can_be_flipped_to_groq():
     assert [p.name for p in cfg.text_chain] == ["groq", "gemini"]
 
 
+def test_malformed_ai_timeout_seconds_falls_back_to_default(caplog):
+    """A typo'd AI_TIMEOUT_SECONDS must degrade to the default, not raise.
+
+    load_config() runs at import time (main.py reads get_config() at module
+    scope), so letting float() raise here would crash the whole app import
+    on a config typo -- exactly what BOOT_ERRORS exists to prevent.
+    """
+    cfg = load_config({
+        "GEMINI_API_KEY": "g-key",
+        "AI_TIMEOUT_SECONDS": "45s",
+    })
+    assert cfg.timeout_seconds == ai_provider._DEFAULT_TIMEOUT_SECONDS
+    assert "AI_TIMEOUT_SECONDS" in caplog.text
+
+
+def test_malformed_ai_retries_falls_back_to_default(caplog):
+    cfg = load_config({
+        "GEMINI_API_KEY": "g-key",
+        "AI_RETRIES": "two",
+    })
+    assert cfg.retries == ai_provider._DEFAULT_RETRIES
+    assert "AI_RETRIES" in caplog.text
+
+
+def test_negative_ai_retries_falls_back_to_default():
+    """AI_RETRIES=-1 would otherwise make complete_json's retry loop body
+    never run and then `raise last_err` with last_err still None, which
+    raises TypeError instead of the real failure. Fall back rather than let
+    that surface.
+    """
+    cfg = load_config({
+        "GEMINI_API_KEY": "g-key",
+        "AI_RETRIES": "-1",
+    })
+    assert cfg.retries == ai_provider._DEFAULT_RETRIES
+
+
+def test_valid_ai_timeout_and_retries_are_still_honored():
+    cfg = load_config({
+        "GEMINI_API_KEY": "g-key",
+        "AI_TIMEOUT_SECONDS": "12.5",
+        "AI_RETRIES": "3",
+    })
+    assert cfg.timeout_seconds == 12.5
+    assert cfg.retries == 3
+
+
 class _StubMessage:
     def __init__(self, content):
         self.content = content

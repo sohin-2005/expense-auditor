@@ -47,6 +47,35 @@ def test_no_ai_provider_configured_marks_health_degraded(monkeypatch):
         importlib.reload(main)
 
 
+def test_malformed_ai_timeout_env_var_does_not_crash_import(monkeypatch):
+    """A typo'd AI_TIMEOUT_SECONDS must not be able to crash `import main`.
+
+    ai_provider.get_config() is read at raw module scope in main.py, before
+    the FastAPI app exists and before any try/except startup hook runs. A
+    bad numeric env var must degrade (load_config's own defensive parsing)
+    rather than propagate out of the import -- reproduces the exact
+    regression: `AI_TIMEOUT_SECONDS="45s" python -c "import main"` used to
+    raise ValueError and take the whole process down.
+    """
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    monkeypatch.setenv("AI_TIMEOUT_SECONDS", "45s")
+    monkeypatch.setattr(ai_provider, "_ACTIVE_CONFIG", None)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+
+    try:
+        reloaded = importlib.reload(main)  # must not raise
+        assert not any(
+            "AI provider config failed to load" in e for e in reloaded.BOOT_ERRORS
+        )
+        with TestClient(reloaded.app) as client:
+            resp = client.get("/health")
+        assert resp.status_code == 200
+    finally:
+        monkeypatch.undo()
+        ai_provider._ACTIVE_CONFIG = None
+        importlib.reload(main)
+
+
 def test_startup_swallows_check_models_exception_and_app_still_serves(monkeypatch):
     """The startup catalog check must never be able to prevent boot.
 

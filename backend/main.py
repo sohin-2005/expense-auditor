@@ -57,11 +57,21 @@ else:
 # narrower than MODEL_WARNINGS (populated below at startup): a transient
 # catalog-read failure must not flip /health to "degraded" on its own, but
 # "no provider configured at all" is known at import time and should.
-_ai_config = ai_provider.get_config()
-if not _ai_config.text_chain and not _ai_config.vision_chain:
-    BOOT_ERRORS.append(
-        "No AI provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY "
-        "environment variables.")
+#
+# This runs at raw module scope during `import main`, before the FastAPI app
+# exists -- there is no request/startup-hook try/except around it the way
+# there is for the catalog check below. Boot must never crash here (that is
+# the whole point of BOOT_ERRORS), so any failure building the config --
+# load_config() itself is defensive, but a future change to it should not be
+# able to take the import down -- is caught and recorded instead of raised.
+try:
+    _ai_config = ai_provider.get_config()
+    if not _ai_config.text_chain and not _ai_config.vision_chain:
+        BOOT_ERRORS.append(
+            "No AI provider configured. Set GEMINI_API_KEY and/or GROQ_API_KEY "
+            "environment variables.")
+except Exception as e:
+    BOOT_ERRORS.append(f"AI provider config failed to load: {e}")
 
 
 def db():
