@@ -2,7 +2,6 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Hea
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from supabase import create_client, Client
-from groq import Groq
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime
@@ -17,6 +16,7 @@ import time
 import PyPDF2
 
 import ai_provider
+from ai_provider import call_ai_json, TEXT, VISION, AIUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,6 @@ load_dotenv(BASE_DIR / ".env")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -52,15 +51,6 @@ else:
     BOOT_ERRORS.append(
         "Missing SUPABASE_URL and/or SUPABASE_SERVICE_ROLE_KEY environment variables.")
 
-groq_client = None
-if GROQ_API_KEY:
-    try:
-        groq_client = Groq(api_key=GROQ_API_KEY)
-    except Exception as e:
-        BOOT_ERRORS.append(f"Groq client init failed: {e}")
-else:
-    BOOT_ERRORS.append("Missing GROQ_API_KEY environment variable.")
-
 
 def db():
     return require_supabase()
@@ -75,31 +65,19 @@ def require_supabase():
     return supabase
 
 
-def require_groq():
-    if groq_client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="AI provider not configured on server. Set GROQ_API_KEY."
-        )
-    return groq_client
-
-OCR_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-AUDIT_MODEL = "qwen/qwen3.8-27b"
-
 FAST_MODE = os.getenv("EXPENSE_AUDIT_FAST_MODE", "1").strip().lower() in {
     "1", "true", "yes", "on"}
 
-OCR_MAX_TOKENS = 350 if FAST_MODE else 420
-AUDIT_MAX_TOKENS = 170 if FAST_MODE else 220
-TRIP_MAX_TOKENS = 650 if FAST_MODE else 900
-
-OCR_RETRIES = 0 if FAST_MODE else 1
-AUDIT_RETRIES = 1 if FAST_MODE else 2
+# Gemini 3.x spends 670-840 tokens on hidden reasoning before its first visible
+# token, and that counts against max_tokens. These ceilings cover reasoning plus
+# roughly 250 tokens of actual JSON. Groq stops well short of them.
+OCR_MAX_TOKENS = 1800
+AUDIT_MAX_TOKENS = 1500
+TRIP_MAX_TOKENS = 2500
 
 POLICY_CONTEXT_MAX_CHARS = 12000 if FAST_MODE else 18000
 RECEIPT_PDF_MAX_PAGES = 8 if FAST_MODE else 20
 RECEIPT_PDF_TEXT_MAX_CHARS = 7000 if FAST_MODE else 12000
-GROQ_TIMEOUT_SECONDS = float(os.getenv("GROQ_TIMEOUT_SECONDS", "25"))
 
 POLICY_CACHE_TTL_SECONDS = 300
 _policy_cache = {}
@@ -287,50 +265,6 @@ def get_policy_context(policy_text: str, context_payload: dict, max_chars: int =
     if not selected:
         return text[:max_chars]
     return "\n\n".join(selected)
-
-
-def safe_json_loads(raw_text: str):
-    if not raw_text:
-        return {}
-    try:
-        return json.loads(raw_text)
-    except Exception:
-        m = re.search(r"\{[\s\S]*\}", raw_text)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except Exception:
-                return {}
-    return {}
-
-
-def call_groq_json(messages, model: str, max_tokens: int, temperature: float = 0, retries: int = 2):
-    last_err = None
-    base_client = require_groq()
-    for attempt in range(retries + 1):
-        try:
-            client = base_client
-            if hasattr(base_client, "with_options"):
-                client = base_client.with_options(timeout=GROQ_TIMEOUT_SECONDS)
-
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            parsed = safe_json_loads(resp.choices[0].message.content)
-            if isinstance(parsed, dict) and parsed:
-                return parsed
-            raise ValueError("Model returned empty/invalid JSON")
-        except Exception as e:
-            last_err = e
-            if attempt < retries:
-                time.sleep(0.45 * (attempt + 1))
-                continue
-            break
-    raise last_err
 
 
 def parse_amount_value(raw):
@@ -949,12 +883,11 @@ async def generate_trip_plan(payload: dict = Body(...), user=Depends(get_current
     prompt = build_trip_planner_prompt(policy_context, trip_request)
 
     try:
-        llm_json = call_groq_json(
+        llm_json = call_ai_json(
             messages=[{"role": "user", "content": prompt}],
-            model=AUDIT_MODEL,
+            task=TEXT,
             max_tokens=TRIP_MAX_TOKENS,
             temperature=0.1,
-            retries=AUDIT_RETRIES,
         )
     except Exception:
         llm_json = {
@@ -1126,20 +1059,18 @@ Rules:
                 raise HTTPException(
                     status_code=400, detail="Could not read text from PDF receipt")
 
-            extracted = call_groq_json(
-                model=AUDIT_MODEL,
+            extracted = call_ai_json(
                 messages=[{
                     "role": "user",
                     "content": f"{ocr_prompt}\n\nReceipt text:\n{pdf_text[:RECEIPT_PDF_TEXT_MAX_CHARS]}"
                 }],
-                temperature=0,
+                task=TEXT,
                 max_tokens=OCR_MAX_TOKENS,
-                retries=OCR_RETRIES,
+                temperature=0,
             )
         else:
             image_b64 = base64.b64encode(content).decode()
-            extracted = call_groq_json(
-                model=OCR_MODEL,
+            extracted = call_ai_json(
                 messages=[{
                     "role": "user",
                     "content": [
@@ -1148,9 +1079,9 @@ Rules:
                             "url": f"data:{mime};base64,{image_b64}"}}
                     ]
                 }],
-                temperature=0,
+                task=VISION,
                 max_tokens=OCR_MAX_TOKENS,
-                retries=OCR_RETRIES,
+                temperature=0,
             )
 
         normalized_amount = parse_amount_value(extracted.get("total_amount"))
@@ -1182,12 +1113,11 @@ Rules:
             policy_context, expense_payload)
 
         try:
-            audit = call_groq_json(
-                model=AUDIT_MODEL,
+            audit = call_ai_json(
                 messages=[{"role": "user", "content": audit_prompt}],
-                temperature=0,
+                task=TEXT,
                 max_tokens=AUDIT_MAX_TOKENS,
-                retries=AUDIT_RETRIES,
+                temperature=0,
             )
         except Exception:
             audit = {
@@ -1401,12 +1331,11 @@ async def add_expense(
     audit_prompt = build_policy_audit_prompt(policy_context, expense_payload)
 
     try:
-        audit = call_groq_json(
-            model=AUDIT_MODEL,
+        audit = call_ai_json(
             messages=[{"role": "user", "content": audit_prompt}],
-            temperature=0,
+            task=TEXT,
             max_tokens=AUDIT_MAX_TOKENS,
-            retries=AUDIT_RETRIES,
+            temperature=0,
         )
     except Exception:
         audit = {
@@ -1690,12 +1619,11 @@ confidence (one of: High, Medium, Low)
 If the policy does not cover the question, say so clearly and set confidence to Low."""
 
     try:
-        result = call_groq_json(
+        result = call_ai_json(
             messages=[{"role": "user", "content": prompt}],
-            model=AUDIT_MODEL,
-            max_tokens=260,
+            task=TEXT,
+            max_tokens=1500,
             temperature=0,
-            retries=AUDIT_RETRIES,
         )
     except Exception:
         raise HTTPException(
