@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -159,3 +160,81 @@ def complete_json(
             break
 
     raise last_err
+
+
+_ACTIVE_CONFIG: AIConfig | None = None
+
+
+class AIUnavailableError(RuntimeError):
+    """Every provider for a task failed. Callers map this to a 503."""
+
+    def __init__(self, task: str, failures: list[str]):
+        self.task = task
+        self.failures = failures
+        super().__init__(
+            f"All providers failed for task={task}: " + "; ".join(failures)
+        )
+
+
+def get_config() -> AIConfig:
+    """Process-wide config, loaded once from the environment."""
+    global _ACTIVE_CONFIG
+    if _ACTIVE_CONFIG is None:
+        _ACTIVE_CONFIG = load_config(os.environ)
+    return _ACTIVE_CONFIG
+
+
+def call_ai_json(
+    messages: Sequence[dict],
+    task: str,
+    max_tokens: int,
+    temperature: float = 0,
+    config: AIConfig | None = None,
+    client_factory: Callable[[ProviderSpec], Any] | None = None,
+) -> dict:
+    """Run a JSON completion for a task, trying each provider in turn.
+
+    Text tasks fall back from Gemini to Groq. Vision tasks cannot fall back --
+    the Groq account has no vision model -- so they raise AIUnavailableError,
+    which the API layer turns into an honest 503 rather than a generic 500.
+    """
+    cfg = config or get_config()
+    if task == TEXT:
+        chain = cfg.text_chain
+    elif task == VISION:
+        chain = cfg.vision_chain
+    else:
+        raise ValueError(f"Unknown task: {task!r}")
+
+    kwargs = {}
+    if client_factory is not None:
+        kwargs["client_factory"] = client_factory
+
+    failures: list[str] = []
+    for spec in chain:
+        try:
+            result = complete_json(
+                spec,
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=cfg.timeout_seconds,
+                retries=cfg.retries,
+                **kwargs,
+            )
+            if failures:
+                logger.warning(
+                    "ai task=%s served by fallback %s/%s after %d failure(s)",
+                    task, spec.name, spec.model, len(failures),
+                )
+            else:
+                logger.info("ai task=%s served by %s/%s", task, spec.name, spec.model)
+            return result
+        except Exception as e:
+            failures.append(f"{spec.name}/{spec.model}: {e}")
+            logger.warning("ai provider failed task=%s %s/%s: %s",
+                           task, spec.name, spec.model, e)
+
+    if not chain:
+        failures.append(f"no provider configured for task={task}")
+    raise AIUnavailableError(task, failures)

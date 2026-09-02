@@ -1,6 +1,7 @@
 import pytest
 import ai_provider
 from ai_provider import ProviderSpec, complete_json, load_config, safe_json_loads, TEXT, VISION
+from ai_provider import AIConfig, AIUnavailableError, call_ai_json
 
 
 def test_text_chain_is_gemini_then_groq_when_both_keys_present():
@@ -143,3 +144,82 @@ def test_complete_json_treats_empty_json_as_failure():
         complete_json(SPEC, [{"role": "user", "content": "x"}],
                       max_tokens=100, temperature=0,
                       timeout_seconds=5, retries=1, client_factory=factory)
+
+
+GEMINI = ProviderSpec("gemini", "k", "http://g", "gm", False)
+GROQ = ProviderSpec("groq", "k", "http://q", "qm", False)
+GEMINI_V = ProviderSpec("gemini", "k", "http://g", "gv", True)
+
+
+def _cfg(text_chain, vision_chain):
+    return AIConfig(text_chain=text_chain, vision_chain=vision_chain,
+                    timeout_seconds=5, retries=0)
+
+
+def _multi_factory(by_model):
+    """Return a factory serving a different scripted client per model."""
+    clients = {model: _StubClient(script) for model, script in by_model.items()}
+    return (lambda spec: clients[spec.model]), clients
+
+
+def test_text_task_uses_primary_when_it_succeeds():
+    factory, clients = _multi_factory({"gm": ['{"from": "gemini"}'], "qm": []})
+    out = call_ai_json([{"role": "user", "content": "x"}], task=TEXT,
+                       max_tokens=50, config=_cfg([GEMINI, GROQ], [GEMINI_V]),
+                       client_factory=factory)
+    assert out == {"from": "gemini"}
+    assert clients["qm"].chat.completions.calls == []
+
+
+def test_text_task_falls_back_to_groq_when_primary_fails():
+    factory, clients = _multi_factory({
+        "gm": [RuntimeError("gemini down")],
+        "qm": ['{"from": "groq"}'],
+    })
+    out = call_ai_json([{"role": "user", "content": "x"}], task=TEXT,
+                       max_tokens=50, config=_cfg([GEMINI, GROQ], [GEMINI_V]),
+                       client_factory=factory)
+    assert out == {"from": "groq"}
+    assert len(clients["qm"].chat.completions.calls) == 1
+
+
+def test_text_task_raises_when_every_provider_fails():
+    factory, _ = _multi_factory({
+        "gm": [RuntimeError("gemini down")],
+        "qm": [RuntimeError("groq down")],
+    })
+    with pytest.raises(AIUnavailableError) as exc:
+        call_ai_json([{"role": "user", "content": "x"}], task=TEXT,
+                     max_tokens=50, config=_cfg([GEMINI, GROQ], [GEMINI_V]),
+                     client_factory=factory)
+    assert exc.value.task == TEXT
+    assert len(exc.value.failures) == 2
+
+
+def test_vision_task_does_not_fall_back_to_groq():
+    factory, clients = _multi_factory({
+        "gv": [RuntimeError("gemini down")],
+        "qm": ['{"from": "groq"}'],
+    })
+    with pytest.raises(AIUnavailableError) as exc:
+        call_ai_json([{"role": "user", "content": "x"}], task=VISION,
+                     max_tokens=50, config=_cfg([GEMINI, GROQ], [GEMINI_V]),
+                     client_factory=factory)
+    assert exc.value.task == VISION
+    assert clients["qm"].chat.completions.calls == []
+
+
+def test_vision_task_raises_when_no_vision_provider_configured():
+    factory, _ = _multi_factory({"qm": []})
+    with pytest.raises(AIUnavailableError):
+        call_ai_json([{"role": "user", "content": "x"}], task=VISION,
+                     max_tokens=50, config=_cfg([GROQ], []),
+                     client_factory=factory)
+
+
+def test_unknown_task_is_rejected():
+    factory, _ = _multi_factory({})
+    with pytest.raises(ValueError):
+        call_ai_json([{"role": "user", "content": "x"}], task="audio",
+                     max_tokens=50, config=_cfg([GEMINI], [GEMINI_V]),
+                     client_factory=factory)
