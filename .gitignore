@@ -1,13 +1,42 @@
+# ── Python ─────────────────────────────────────────────────────────────────
 venv/
 .venv/
+env/
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── Node / Vite ────────────────────────────────────────────────────────────
 node_modules/
 dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+
+# ── Secrets ────────────────────────────────────────────────────────────────
+# Only the *.example templates are committed. Never commit a real .env:
+# it holds the Supabase service_role key and the AI provider API keys.
+.env
+.env.*
+!.env.example
+
+# ── Runtime data ───────────────────────────────────────────────────────────
+# Receipt images/PDFs written by POST /extract-receipt. User data, not source,
+# and ephemeral on Render anyway (see docs/DEPLOYMENT.md).
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# ── Editors / OS ───────────────────────────────────────────────────────────
 .DS_Store
 .idea/
 .vscode/
+*.swp
 
-# Scratch state for subagent-driven plan execution (ledgers, briefs, reports)
+# ── Agent scratch state (subagent ledgers, briefs, reports) ────────────────
 .superpowers/
