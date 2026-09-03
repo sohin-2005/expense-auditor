@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react"
-import { supabase } from "./supabase"
+import { supabase, readPersistedSession, clearPersistedSession } from "./supabase"
 import axios from "axios"
 import { FileText, ClipboardList, AlertTriangle, ScanLine, ShieldCheck, BadgeCheck, ChartNoAxesColumn, Bell, RefreshCw, MapPin, CalendarDays, Briefcase, Plane, BedDouble, UtensilsCrossed, ShieldAlert, WandSparkles, LayoutGrid, Compass, Receipt, BarChart3, ScrollText, LogOut, Download, MessageCircleQuestion, CheckCircle2, WifiOff } from "lucide-react"
 
@@ -14,42 +14,95 @@ const API_CONFIG_ERROR = !API
 const BRAND_NAME = "Audixa"
 const BRAND_LOGO = "/audixa-logo.png?v=20260407"
 
+// Light theme. Foreground colors are picked to clear WCAG AA (4.5:1) against the
+// white background — the brand lime reads at only ~2.5:1 on white, so THEME.accent is
+// a deepened version of it for text and borders, while the bright lime is kept for
+// filled buttons and tints where it sits behind black text or acts as a wash.
 const THEME = {
-  bg: "#0d0d10",
-  surface: "#13131a",
-  surfaceAlt: "#0f0f15",
-  border: "#1e1e26",
-  borderHover: "#2a2a38",
-  accent: "#76b900",
-  accentHover: "#5a8c00",
-  accentDim: "rgba(118,185,0,0.12)",
-  blue: "#4da6ff",
-  blueDim: "rgba(77,166,255,0.1)",
-  amber: "#f59e0b",
-  amberDim: "rgba(245,158,11,0.1)",
-  textPrimary: "#e8e8e8",
-  textSecond: "#888",
-  textMuted: "#555",
-  green: "#76b900",
-  greenDim: "rgba(118,185,0,0.10)",
-  red: "#ef4444",
-  redDim: "rgba(239,68,68,0.10)",
+  bg: "#ffffff",
+  surface: "#ffffff",
+  surfaceAlt: "#f6f7f9",
+  border: "#e5e7eb",
+  borderHover: "#d1d5db",
+  accent: "#4d7a00",
+  accentHover: "#3d6100",
+  accentDim: "rgba(118,185,0,0.14)",
+  blue: "#1d4ed8",
+  blueDim: "rgba(29,78,216,0.08)",
+  amber: "#b45309",
+  amberDim: "rgba(245,158,11,0.14)",
+  textPrimary: "#111827",
+  textSecond: "#4b5563",
+  textMuted: "#6b7280",
+  green: "#4d7a00",
+  greenDim: "rgba(118,185,0,0.12)",
+  red: "#dc2626",
+  redDim: "rgba(220,38,38,0.08)",
 }
 
 const primaryBtnStyle = (disabled = false) => ({
   background: disabled
-    ? "linear-gradient(135deg, #4b4b4b 0%, #2f2f2f 100%)"
+    ? "linear-gradient(135deg, #e5e7eb 0%, #d1d5db 100%)"
     : "linear-gradient(135deg, #76b900 0%, #5a8c00 100%)",
-  color: "#000",
+  // Black on the lime fill still reads well; the disabled fill is now light, so its
+  // label has to go grey or the button stops looking disabled.
+  color: disabled ? "#9ca3af" : "#000",
   border: "none",
   borderRadius: 8,
   cursor: disabled ? "not-allowed" : "pointer",
   transition: "all 0.22s ease",
 })
 
+// Every authenticated request needs a bearer token, and supabase.auth.getSession()
+// acquires the gotrue "lock:sb-<ref>-auth-token" navigator lock on each call. With a
+// getToken() at ~14 call sites, concurrent actions pile up on that one lock; gotrue
+// force-steals any lock held past 5s and the loser rejects with 'Lock "..." was
+// released because another request stole it', which surfaced to users as a failed
+// upload. The session we already track via onAuthStateChange carries the same token,
+// so serve it from here and let N concurrent requests take zero locks.
+let cachedSession = null
+const rememberSession = (session) => { cachedSession = session ?? null }
+
+// Refresh a little before the JWT actually expires, so a request in flight when the
+// clock rolls over doesn't land as a 401.
+const TOKEN_EXPIRY_SKEW_SECONDS = 60
+
+// How long the splash may stay up waiting on the SDK's INITIAL_SESSION before we give
+// up and render the login form. Short by design: nothing the user needs is behind it.
+const SPLASH_FLOOR_MS = 1500
+
+// Returning undefined here is not an option: every caller interpolates the result
+// straight into `Bearer ${token}`, so a missing token used to leave as the literal
+// string "Bearer undefined" and come back from the API as an opaque 401 "Invalid
+// token". Throw instead — the callers all catch and surface err.message, so the user
+// gets told to sign in again rather than being handed a server error.
+const SESSION_EXPIRED_MESSAGE = "Your session has expired. Please sign in again."
+
 const getToken = async () => {
-  const { data } = await supabase.auth.getSession()
-  return data.session?.access_token
+  const expiresAt = cachedSession?.expires_at
+  if (cachedSession?.access_token && expiresAt &&
+      expiresAt - TOKEN_EXPIRY_SKEW_SECONDS > Date.now() / 1000) {
+    return cachedSession.access_token
+  }
+
+  // Cache is empty or the token is at/near expiry — go to gotrue, which refreshes it
+  // and fires TOKEN_REFRESHED, repopulating the cache through onAuthStateChange.
+  let session
+  try {
+    const { data } = await supabase.auth.getSession()
+    session = data.session
+  } catch (err) {
+    // A stolen lock rejects here.
+    console.error("getToken: getSession() rejected (contended auth lock?):", err)
+    throw new Error(SESSION_EXPIRED_MESSAGE)
+  }
+
+  rememberSession(session)
+  if (!session?.access_token) {
+    console.error("getToken: getSession() resolved with no session — signed out or storage cleared")
+    throw new Error(SESSION_EXPIRED_MESSAGE)
+  }
+  return session.access_token
 }
 
 const formatClaimDate = (claim) => {
@@ -62,12 +115,14 @@ const getClaimDisplayName = (claim) => {
   return claim?.report_name || claim?.purpose || claim?.entity || "Untitled Claim"
 }
 
+// Text is the deepened variant so the label clears AA against its own tint; the dot
+// keeps the vivid hue, since a 6px dot is decoration and reads better saturated.
 const STATUS_STYLES = {
-  Draft: { bg: "rgba(100,100,120,0.15)", text: "#666", dot: "#555" },
-  "Pending Approval": { bg: "rgba(245,158,11,0.1)", text: "#f59e0b", dot: "#f59e0b" },
-  Approved: { bg: "rgba(118,185,0,0.12)", text: "#76b900", dot: "#76b900" },
-  Rejected: { bg: "rgba(239,68,68,0.1)", text: "#ef4444", dot: "#ef4444" },
-  Flagged: { bg: "rgba(245,158,11,0.1)", text: "#f59e0b", dot: "#f59e0b" },
+  Draft: { bg: "rgba(107,114,128,0.14)", text: "#4b5563", dot: "#6b7280" },
+  "Pending Approval": { bg: "rgba(245,158,11,0.16)", text: "#b45309", dot: "#f59e0b" },
+  Approved: { bg: "rgba(118,185,0,0.16)", text: "#4d7a00", dot: "#76b900" },
+  Rejected: { bg: "rgba(220,38,38,0.10)", text: "#dc2626", dot: "#dc2626" },
+  Flagged: { bg: "rgba(245,158,11,0.16)", text: "#b45309", dot: "#f59e0b" },
 }
 
 const normalizeStatus = (status) => {
@@ -95,16 +150,18 @@ const getISTGreeting = () => {
 }
 
 const useIsMobile = (breakpoint = 900) => {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === "undefined") return false
-    return window.innerWidth <= breakpoint
-  })
+  const [isMobile, setIsMobile] = useState(false)
 
   useEffect(() => {
     if (typeof window === "undefined") return
+    
+    // Set initial value
+    setIsMobile(window.innerWidth <= breakpoint)
+    
+    // Update on resize
     const onResize = () => setIsMobile(window.innerWidth <= breakpoint)
-    onResize()
     window.addEventListener("resize", onResize)
+    
     return () => window.removeEventListener("resize", onResize)
   }, [breakpoint])
 
@@ -130,18 +187,18 @@ const Input = ({ label, required, error, ...props }) => (
   <div style={{ marginBottom: 14 }}>
     {label && (
       <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: THEME.textSecond, marginBottom: 5 }}>
-        {label}{required && <span style={{ color: "#ef4444", marginLeft: 2 }}>*</span>}
+        {label}{required && <span style={{ color: "#dc2626", marginLeft: 2 }}>*</span>}
       </label>
     )}
     <input {...props} style={{
       width: "100%", padding: "8px 11px", fontSize: 13,
-      border: `1px solid ${error ? "#ef4444" : THEME.border}`,
+      border: `1px solid ${error ? "#dc2626" : THEME.border}`,
       borderRadius: 6, boxSizing: "border-box", outline: "none",
       color: THEME.textPrimary,
-      background: error ? "#2a1010" : THEME.surface,
+      background: error ? "#fef2f2" : THEME.surface,
       ...props.style
     }} />
-    {error && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 3 }}>{error}</div>}
+    {error && <div style={{ fontSize: 11, color: "#dc2626", marginTop: 3 }}>{error}</div>}
   </div>
 )
 
@@ -149,18 +206,18 @@ const Select = ({ label, required, error, children, ...props }) => (
   <div style={{ marginBottom: 14 }}>
     {label && (
       <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: THEME.textSecond, marginBottom: 5 }}>
-        {label}{required && <span style={{ color: "#ef4444", marginLeft: 2 }}>*</span>}
+        {label}{required && <span style={{ color: "#dc2626", marginLeft: 2 }}>*</span>}
       </label>
     )}
     <select {...props} style={{
       width: "100%", padding: "8px 11px", fontSize: 13,
-      border: `1px solid ${error ? "#ef4444" : THEME.border}`,
+      border: `1px solid ${error ? "#dc2626" : THEME.border}`,
       borderRadius: 6, boxSizing: "border-box", background: THEME.surface, color: THEME.textPrimary, outline: "none",
       ...props.style
     }}>
       {children}
     </select>
-    {error && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 3 }}>{error}</div>}
+    {error && <div style={{ fontSize: 11, color: "#dc2626", marginTop: 3 }}>{error}</div>}
   </div>
 )
 
@@ -194,7 +251,7 @@ function AuthPage({ onAuth }) {
   }
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: isMobile ? "column" : "row", background: "#0B0F19", fontFamily: "Inter, system-ui, sans-serif" }}>
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: isMobile ? "column" : "row", background: THEME.bg, fontFamily: "Inter, system-ui, sans-serif" }}>
       <div style={{
         width: isMobile ? "100%" : "52%",
         position: "relative",
@@ -203,18 +260,18 @@ function AuthPage({ onAuth }) {
         flexDirection: "column",
         justifyContent: "center",
         padding: isMobile ? "34px 20px" : "72px 58px",
-        color: "#E5E7EB",
-        background: "radial-gradient(900px 520px at 20% 25%, rgba(132,204,22,0.22), transparent 60%), radial-gradient(700px 480px at 65% 60%, rgba(16,185,129,0.10), transparent 70%), linear-gradient(160deg, #0d1a00 0%, #0e1510 45%, #0B0F19 100%)",
+        color: "#111827",
+        background: "radial-gradient(900px 520px at 20% 25%, rgba(132,204,22,0.20), transparent 60%), radial-gradient(700px 480px at 65% 60%, rgba(16,185,129,0.10), transparent 70%), linear-gradient(160deg, #f4faea 0%, #f7faf4 45%, #ffffff 100%)",
         borderRight: isMobile ? "none" : `1px solid ${THEME.border}`,
         borderBottom: isMobile ? `1px solid ${THEME.border}` : "none"
       }}>
-        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", opacity: 0.2, backgroundImage: "linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)", backgroundSize: "34px 34px" }} />
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none", opacity: 0.2, backgroundImage: "linear-gradient(rgba(17,24,39,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(17,24,39,0.05) 1px, transparent 1px)", backgroundSize: "34px 34px" }} />
         <div style={{ position: "absolute", top: -120, left: -120, width: 280, height: 280, borderRadius: "50%", background: "radial-gradient(circle, rgba(132,204,22,0.30) 0%, rgba(132,204,22,0) 70%)", filter: "blur(8px)", pointerEvents: "none" }} />
         <div style={{ position: "absolute", bottom: -100, right: -80, width: 260, height: 260, borderRadius: "50%", background: "radial-gradient(circle, rgba(16,185,129,0.22) 0%, rgba(16,185,129,0) 72%)", filter: "blur(10px)", pointerEvents: "none" }} />
 
         <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
           <div style={{ fontSize: isMobile ? 32 : 38, fontWeight: 700, letterSpacing: "0.04em", lineHeight: 1, textTransform: "uppercase", fontFamily: "Inter, system-ui, sans-serif" }}>
-            <span style={{ color: "#E5E7EB" }}>AUDI</span><span style={{ color: "#84CC16" }}>XA</span>
+            <span style={{ color: "#111827" }}>AUDI</span><span style={{ color: "#4d7a00" }}>XA</span>
           </div>
         </div>
 
@@ -222,7 +279,7 @@ function AuthPage({ onAuth }) {
           Smart Expense Management for Modern Teams
         </div>
 
-        <div style={{ position: "relative", fontSize: isMobile ? 15 : 17, color: "#AAB4C4", lineHeight: 1.75, maxWidth: 560, marginBottom: 34 }}>
+        <div style={{ position: "relative", fontSize: isMobile ? 15 : 17, color: "#4b5563", lineHeight: 1.75, maxWidth: 560, marginBottom: 34 }}>
           Submit, track, and approve expense claims with AI-powered receipt scanning and real-time policy compliance.
         </div>
 
@@ -236,57 +293,57 @@ function AuthPage({ onAuth }) {
             <div key={label} style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "11px 13px", borderRadius: 12,
-              background: "rgba(11,15,25,0.35)", border: "1px solid rgba(255,255,255,0.08)",
-              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06), 0 10px 26px rgba(0,0,0,0.25)",
+              background: "rgba(255,255,255,0.75)", border: "1px solid rgba(17,24,39,0.08)",
+              boxShadow: "inset 0 1px 0 rgba(17,24,39,0.06), 0 10px 26px rgba(17,24,39,0.06)",
               transition: "all 0.24s ease"
             }}>
-              <span style={{ width: 22, height: 22, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#A3E635", background: "rgba(132,204,22,0.08)", border: "1px solid rgba(132,204,22,0.28)", borderRadius: 6 }}>
+              <span style={{ width: 22, height: 22, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#4d7a00", background: "rgba(132,204,22,0.08)", border: "1px solid rgba(132,204,22,0.28)", borderRadius: 6 }}>
                 <Icon size={14} strokeWidth={2} />
               </span>
-              <span style={{ fontSize: 13, color: "#D5DDEA", fontWeight: 500 }}>{label}</span>
+              <span style={{ fontSize: 13, color: "#374151", fontWeight: 500 }}>{label}</span>
             </div>
           ))}
         </div>
       </div>
 
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? 16 : 48, background: "radial-gradient(600px 380px at 80% 20%, rgba(132,204,22,0.10), transparent 68%), #0B0F19" }}>
-        <div style={{ width: isMobile ? "100%" : 430, maxWidth: 430, borderRadius: 18, padding: isMobile ? "22px 16px 18px" : "28px 24px 24px", background: "linear-gradient(180deg, rgba(19,24,36,0.72) 0%, rgba(11,15,25,0.58) 100%)", border: "1px solid rgba(255,255,255,0.10)", backdropFilter: "blur(12px)", boxShadow: "0 14px 45px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08)" }}>
-          <h2 style={{ margin: "0 0 8px", fontSize: isMobile ? 28 : 32, fontWeight: 600, color: "#E5E7EB", letterSpacing: "0.01em", fontFamily: "'Playfair Display', Georgia, serif" }}>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: isMobile ? 16 : 48, background: "radial-gradient(600px 380px at 80% 20%, rgba(132,204,22,0.10), transparent 68%), #ffffff" }}>
+        <div style={{ width: isMobile ? "100%" : 430, maxWidth: 430, borderRadius: 18, padding: isMobile ? "22px 16px 18px" : "28px 24px 24px", background: "linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%)", border: "1px solid rgba(17,24,39,0.10)", backdropFilter: "blur(12px)", boxShadow: "0 14px 45px rgba(17,24,39,0.10), inset 0 1px 0 rgba(17,24,39,0.08)" }}>
+          <h2 style={{ margin: "0 0 8px", fontSize: isMobile ? 28 : 32, fontWeight: 600, color: "#111827", letterSpacing: "0.01em", fontFamily: "'Playfair Display', Georgia, serif" }}>
             {mode === "login" ? "Welcome back" : "Create account"}
           </h2>
-          <p style={{ margin: "0 0 24px", color: "#94A3B8", fontSize: 15 }}>
+          <p style={{ margin: "0 0 24px", color: "#4b5563", fontSize: 15 }}>
             {mode === "login" ? `Sign in to your ${BRAND_NAME} account` : `Get started with ${BRAND_NAME}`}
           </p>
 
-          <div style={{ display: "flex", marginBottom: 24, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 11, overflow: "hidden", background: "rgba(10,13,21,0.55)" }}>
+          <div style={{ display: "flex", marginBottom: 24, border: "1px solid rgba(17,24,39,0.08)", borderRadius: 11, overflow: "hidden", background: "#f6f7f9" }}>
             {[ ["login", "Sign In"], ["register", "Register"] ].map(([m, l]) => (
               <button key={m} onClick={() => setMode(m)} style={{
                 flex: 1, padding: "10px", border: "none", cursor: "pointer", fontSize: 14, fontWeight: 600,
                 background: mode === m ? "linear-gradient(135deg, rgba(132,204,22,0.24), rgba(22,163,74,0.13))" : "transparent",
-                color: mode === m ? "#84CC16" : "#94A3B8",
+                color: mode === m ? "#4d7a00" : "#4b5563",
                 transition: "all 0.26s ease"
               }}>{l}</button>
             ))}
           </div>
 
           {mode === "register" && <>
-            <Input label="Full Name" value={name} onChange={e => setName(e.target.value)} placeholder="John Smith" style={{ borderRadius: 10, padding: "11px 12px", background: "rgba(8,12,19,0.8)", border: "1px solid rgba(255,255,255,0.10)" }} />
-            <Input label="Company ID" value={companyId} onChange={e => setCompanyId(e.target.value)} placeholder="e.g. acmecorp" style={{ borderRadius: 10, padding: "11px 12px", background: "rgba(8,12,19,0.8)", border: "1px solid rgba(255,255,255,0.10)" }} />
-            <Select label="Role" value={role} onChange={e => setRole(e.target.value)} style={{ borderRadius: 10, padding: "11px 12px", background: "rgba(8,12,19,0.8)", border: "1px solid rgba(255,255,255,0.10)" }}>
+            <Input label="Full Name" value={name} onChange={e => setName(e.target.value)} placeholder="John Smith" style={{ borderRadius: 10, padding: "11px 12px", background: "#ffffff", border: "1px solid rgba(17,24,39,0.10)" }} />
+            <Input label="Company ID" value={companyId} onChange={e => setCompanyId(e.target.value)} placeholder="e.g. acmecorp" style={{ borderRadius: 10, padding: "11px 12px", background: "#ffffff", border: "1px solid rgba(17,24,39,0.10)" }} />
+            <Select label="Role" value={role} onChange={e => setRole(e.target.value)} style={{ borderRadius: 10, padding: "11px 12px", background: "#ffffff", border: "1px solid rgba(17,24,39,0.10)" }}>
               <option value="employee">Employee</option>
               <option value="finance">Finance Team</option>
               <option value="manager">Manager / Approver</option>
             </Select>
           </>}
 
-          <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" style={{ borderRadius: 10, padding: "11px 12px", background: "rgba(8,12,19,0.8)", border: "1px solid rgba(255,255,255,0.10)" }} />
-          <Input label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={{ borderRadius: 10, padding: "11px 12px", background: "rgba(8,12,19,0.8)", border: "1px solid rgba(255,255,255,0.10)" }} />
+          <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" style={{ borderRadius: 10, padding: "11px 12px", background: "#ffffff", border: "1px solid rgba(17,24,39,0.10)" }} />
+          <Input label="Password" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={{ borderRadius: 10, padding: "11px 12px", background: "#ffffff", border: "1px solid rgba(17,24,39,0.10)" }} />
 
           {error && (
             <div style={{
               marginBottom: 16, padding: "10px 14px", borderRadius: 10, fontSize: 13,
               background: error.includes("Registered") ? "rgba(22,163,74,0.13)" : "rgba(239,68,68,0.14)",
-              color: error.includes("Registered") ? "#86efac" : "#fca5a5",
+              color: error.includes("Registered") ? "#15803d" : "#b91c1c",
               border: `1px solid ${error.includes("Registered") ? "rgba(34,197,94,0.35)" : "rgba(248,113,113,0.35)"}`
             }}>{error}</div>
           )}
@@ -375,7 +432,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
   return (
     <div style={{
       width: isMobile ? "min(88vw, 320px)" : 232,
-      background: "#111114",
+      background: "#f9fafb",
       borderRight: `1px solid ${THEME.border}`,
       minHeight: "100vh",
       height: "100vh",
@@ -407,7 +464,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
             gap: 8,
             padding: "8px 0",
             borderRadius: 12,
-            background: "linear-gradient(160deg, rgba(118,185,0,0.10) 0%, rgba(19,19,26,0.95) 55%, rgba(19,19,26,1) 100%)",
+            background: "linear-gradient(160deg, rgba(118,185,0,0.10) 0%, #f9fafb 55%, #f6f7f9 100%)",
             border: `1px solid ${THEME.border}`,
             transition: "all 0.22s ease",
           }}
@@ -436,7 +493,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
               marginBottom: 6,
               textTransform: "uppercase",
             }}>
-              <span style={{ color: "#E5E7EB" }}>AUDI</span><span style={{ color: "#84CC16" }}>XA</span>
+              <span style={{ color: "#111827" }}>AUDI</span><span style={{ color: "#4d7a00" }}>XA</span>
             </div>
             <div style={{ fontSize: 10, color: THEME.textMuted, letterSpacing: "0.03em" }}>Expense Management</div>
           </div>
@@ -509,7 +566,7 @@ function Sidebar({ page, setPage, profile, onLogout, onProfileUpdate, isMobile =
               Cancel
             </button>
           </div>
-          {!!profileMsg && <div style={{ marginTop: 6, fontSize: 11, color: profileMsg === "Saved" ? THEME.accent : "#ef4444" }}>{profileMsg}</div>}
+          {!!profileMsg && <div style={{ marginTop: 6, fontSize: 11, color: profileMsg === "Saved" ? THEME.accent : "#dc2626" }}>{profileMsg}</div>}
         </div>
       )}
 
@@ -633,7 +690,7 @@ function Dashboard({ profile, setPage, setCurrent, isMobile = false }) {
               border: `1px solid ${THEME.border}`, transition: "all 0.22s ease",
               display: "flex", justifyContent: "space-between", alignItems: "flex-start"
             }}
-            onMouseEnter={e => e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.1)"}
+            onMouseEnter={e => e.currentTarget.style.boxShadow = "0 4px 12px rgba(17,24,39,0.05)"}
             onMouseLeave={e => e.currentTarget.style.boxShadow = "0 1px 3px rgba(0,0,0,0.07)"}
           >
             <div>
@@ -660,7 +717,7 @@ function Dashboard({ profile, setPage, setCurrent, isMobile = false }) {
         </button>
       </div>
 
-      <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.18)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+      <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.05)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: `1px solid ${THEME.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary }}>Recent Claims</div>
           <button onClick={() => setPage("claims")} style={{ fontSize: 12, color: THEME.blue, background: "none", border: "none", cursor: "pointer", fontWeight: 500 }}>View all →</button>
@@ -845,16 +902,16 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
   if (step === "choose") {
     return (
       <div style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+        position: "fixed", inset: 0, background: "rgba(17,24,39,0.08)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999
       }}>
-        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "94vw" : 520, maxWidth: 520, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "94vw" : 520, maxWidth: 520, boxShadow: "0 20px 60px rgba(17,24,39,0.06)" }}>
           <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: "#111827" }}>Create Expense Claim</h2>
               <p style={{ margin: "3px 0 0", fontSize: 12, color: "#6b7280" }}>How would you like to create your claim?</p>
             </div>
-            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#9ca3af", lineHeight: 1 }}>✕</button>
+            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
           </div>
 
           <div style={{ padding: 24, display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14 }}>
@@ -903,10 +960,10 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
   if (step === "manual") {
     return (
       <div style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+        position: "fixed", inset: 0, background: "rgba(17,24,39,0.08)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999
       }}>
-        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "94vw" : 580, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "94vw" : 580, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(17,24,39,0.06)" }}>
           <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -917,7 +974,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
               <h2 style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 700, color: "#111827" }}>Manual Entry</h2>
               <p style={{ margin: "3px 0 0", fontSize: 12, color: "#6b7280" }}>Fill in the details below to create a new expense report</p>
             </div>
-            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#9ca3af", lineHeight: 1 }}>✕</button>
+            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
           </div>
 
           <div style={{ padding: 24 }}>
@@ -932,12 +989,12 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 }}>Employee ID</label>
                 <input value={profile?.id?.slice(0,8) || "—"} disabled
-                  style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#9ca3af" }} />
+                  style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#6b7280" }} />
               </div>
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 }}>Employee Name</label>
                 <input value={profile?.full_name || ""} disabled
-                  style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#9ca3af" }} />
+                  style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#6b7280" }} />
               </div>
             </div>
 
@@ -983,7 +1040,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
               Cancel
             </button>
             <button onClick={handleManualSubmit} disabled={loading} style={{
-              padding: "9px 20px", background: loading ? "#93c5fd" : "#1d4ed8",
+              padding: "9px 20px", background: loading ? "#1d4ed8" : "#1d4ed8",
               color: "white", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer"
             }}>
               {loading ? "Creating..." : "Create Claim"}
@@ -998,10 +1055,10 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
   if (step === "scan") {
     return (
       <div style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+        position: "fixed", inset: 0, background: "rgba(17,24,39,0.08)",
         display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999
       }}>
-        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "96vw" : 640, maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ background: "white", borderRadius: 12, width: isMobile ? "96vw" : 640, maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(17,24,39,0.06)" }}>
           <div style={{ padding: "18px 24px", borderBottom: "1px solid #f3f4f6", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div>
               <button onClick={() => { setStep("choose"); setScanResult(null); setScanError("") }} style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontSize: 13, padding: 0 }}>
@@ -1010,25 +1067,25 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
               <h2 style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 700, color: "#111827" }}>Scan Receipt</h2>
               <p style={{ margin: "3px 0 0", fontSize: 12, color: "#6b7280" }}>Upload a receipt — AI will extract details and run a policy audit</p>
             </div>
-            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#9ca3af", lineHeight: 1 }}>✕</button>
+            <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#6b7280", lineHeight: 1 }}>✕</button>
           </div>
 
           <div style={{ padding: 24 }}>
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 14, marginBottom: 14 }}>
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 }}>Employee</label>
-                <input value={profile?.full_name || ""} disabled style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#9ca3af" }} />
+                <input value={profile?.full_name || ""} disabled style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#6b7280" }} />
               </div>
               <div>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 5 }}>Company</label>
-                <input value={profile?.company_id || "default"} disabled style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#9ca3af" }} />
+                <input value={profile?.company_id || "default"} disabled style={{ width: "100%", padding: "8px 11px", fontSize: 13, border: "1px solid #e5e7eb", borderRadius: 6, background: "#f9fafb", boxSizing: "border-box", color: "#6b7280" }} />
               </div>
             </div>
 
             {/* File upload */}
             <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                Receipt Upload <span style={{ color: "#ef4444" }}>*</span>
+                Receipt Upload <span style={{ color: "#dc2626" }}>*</span>
               </label>
               <div
                 onClick={() => document.getElementById("createClaimScanFile").click()}
@@ -1048,7 +1105,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
             {/* Business purpose */}
             <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>
-                Business Purpose <span style={{ color: "#ef4444" }}>*</span>
+                Business Purpose <span style={{ color: "#dc2626" }}>*</span>
               </label>
               <textarea
                 rows={3}
@@ -1061,7 +1118,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
 
             <button onClick={handleScan} disabled={scanning} style={{
               width: "100%", padding: 11, border: "none", borderRadius: 8,
-              background: scanning ? "#93c5fd" : "#1d4ed8", color: "white",
+              background: scanning ? "#1d4ed8" : "#1d4ed8", color: "white",
               fontSize: 14, fontWeight: 700, cursor: scanning ? "not-allowed" : "pointer", marginBottom: 4
             }}>
               {scanning ? "Processing with AI…" : "Submit & Run OCR + Policy Audit"}
@@ -1086,7 +1143,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
 
                 <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr" }}>
                   <div style={{ padding: 16, borderRight: "1px solid #f3f4f6" }}>
-                    <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 700, marginBottom: 8 }}>RECEIPT</div>
+                    <div style={{ fontSize: 11, color: "#6b7280", fontWeight: 700, marginBottom: 8 }}>RECEIPT</div>
                     {preview ? (
                       <img src={preview} alt="receipt" style={{ width: "100%", borderRadius: 8, border: "1px solid #e5e7eb" }} />
                     ) : (
@@ -1094,7 +1151,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
                     )}
                   </div>
                   <div style={{ padding: 16 }}>
-                    <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 700, marginBottom: 8 }}>EXTRACTED DETAILS</div>
+                    <div style={{ fontSize: 11, color: "#6b7280", fontWeight: 700, marginBottom: 8 }}>EXTRACTED DETAILS</div>
                     <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 10 }}>
                       <tbody>
                         {[
@@ -1127,7 +1184,7 @@ function CreateClaimModal({ profile, onClose, onCreate, isMobile = false }) {
                     Cancel
                   </button>
                   <button onClick={handleCreateFromScan} disabled={creating} style={{
-                    padding: "8px 18px", background: creating ? "#93c5fd" : "#1d4ed8",
+                    padding: "8px 18px", background: creating ? "#1d4ed8" : "#1d4ed8",
                     color: "white", border: "none", borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: creating ? "not-allowed" : "pointer"
                   }}>
                     {creating ? "Creating..." : "Create Claim from Receipt →"}
@@ -1205,17 +1262,17 @@ function ClaimsPage({ profile, setPage, setCurrent, isMobile = false }) {
       {/* Status summary */}
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "repeat(2, 1fr)" : "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
         {[
-          { label: "Total", value: claims.length, color: THEME.blue, accent: "rgba(77,166,255,0.2)" },
-          { label: "Draft", value: claims.filter(c => c.status === "Draft").length, color: "#9ca3af", accent: "rgba(156,163,175,0.2)" },
+          { label: "Total", value: claims.length, color: THEME.blue, accent: "rgba(29,78,216,0.35)" },
+          { label: "Draft", value: claims.filter(c => c.status === "Draft").length, color: "#6b7280", accent: "rgba(107,114,128,0.35)" },
           { label: "Flagged", value: claims.filter(c => normalizeStatus(c.status) === "Flagged").length, color: THEME.amber, accent: "rgba(245,158,11,0.24)" },
           { label: "Approved", value: claims.filter(c => normalizeStatus(c.status) === "Approved").length, color: THEME.accent, accent: "rgba(118,185,0,0.24)" },
         ].map(card => (
           <div key={card.label} style={{
-            background: "linear-gradient(135deg, #15151d 0%, #101018 100%)",
+            background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)",
             border: `1px solid ${THEME.border}`,
             borderRadius: 12,
             padding: "14px 16px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+            boxShadow: "0 1px 3px rgba(17,24,39,0.06)",
           }}>
             <div style={{ fontSize: 22, fontWeight: 800, color: card.color }}>{card.value}</div>
             <div style={{ fontSize: 12, color: THEME.textSecond }}>{card.label}</div>
@@ -1229,9 +1286,9 @@ function ClaimsPage({ profile, setPage, setCurrent, isMobile = false }) {
           marginBottom: 14,
           padding: "12px 14px",
           borderRadius: 10,
-          background: "rgba(77,166,255,0.08)",
+          background: "rgba(29,78,216,0.06)",
           border: `1px solid ${THEME.blue}`,
-          color: "#b9dcff",
+          color: "#1e40af",
           fontSize: 12,
           lineHeight: 1.55,
         }}>
@@ -1240,14 +1297,14 @@ function ClaimsPage({ profile, setPage, setCurrent, isMobile = false }) {
         </div>
       )}
 
-      <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.18)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+      <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.05)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
         {loading ? (
-          <div style={{ padding: 48, textAlign: "center", color: "#9ca3af" }}>Loading claims...</div>
+          <div style={{ padding: 48, textAlign: "center", color: "#6b7280" }}>Loading claims...</div>
         ) : claims.length === 0 ? (
           <div style={{ padding: 64, textAlign: "center" }}>
             <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}><ClipboardList size={36} strokeWidth={1.3} color={THEME.textMuted} /></div>
             <div style={{ fontSize: 16, fontWeight: 600, color: "#374151", marginBottom: 6 }}>No expense claims</div>
-            <div style={{ fontSize: 13, color: "#9ca3af", marginBottom: 20 }}>Create your first expense claim to get started</div>
+            <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 20 }}>Create your first expense claim to get started</div>
             <button onClick={() => setShowCreateClaim(true)} style={{
               padding: "9px 18px", fontSize: 13, fontWeight: 700,
               ...primaryBtnStyle(false)
@@ -1380,7 +1437,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
         </div>
 
         <div style={{ marginBottom: 14 }}>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Receipt Upload <span style={{ color: "#ef4444" }}>*</span></label>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Receipt Upload <span style={{ color: "#dc2626" }}>*</span></label>
           <div onClick={() => document.getElementById("submitReceiptFile").click()}
             style={{ border: "2px dashed #d1d5db", borderRadius: 8, padding: 20, textAlign: "center", cursor: "pointer", background: "#f9fafb" }}>
             {preview ? (
@@ -1395,7 +1452,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
         </div>
 
         <div style={{ marginBottom: 14 }}>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Business Purpose <span style={{ color: "#ef4444" }}>*</span></label>
+          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Business Purpose <span style={{ color: "#dc2626" }}>*</span></label>
           <textarea
             rows={3}
             value={purpose}
@@ -1405,7 +1462,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
           />
         </div>
 
-        <button onClick={handleSubmit} disabled={loading} style={{ width: "100%", padding: 11, border: "none", borderRadius: 8, background: loading ? "#93c5fd" : "#1d4ed8", color: "white", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer" }}>
+        <button onClick={handleSubmit} disabled={loading} style={{ width: "100%", padding: 11, border: "none", borderRadius: 8, background: loading ? "#1d4ed8" : "#1d4ed8", color: "white", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer" }}>
           {loading ? "Processing with AI…" : "Submit & Run OCR + Policy Audit"}
         </button>
 
@@ -1424,7 +1481,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr" }}>
             <div style={{ padding: 18, borderRight: "1px solid #f3f4f6" }}>
-              <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 700, marginBottom: 8 }}>RECEIPT</div>
+              <div style={{ fontSize: 11, color: "#6b7280", fontWeight: 700, marginBottom: 8 }}>RECEIPT</div>
               {preview ? (
                 <img src={preview} alt="receipt" style={{ width: "100%", borderRadius: 8, border: "1px solid #e5e7eb" }} />
               ) : (
@@ -1433,7 +1490,7 @@ function SubmitExpensePage({ profile, setPage, setCurrent }) {
             </div>
 
             <div style={{ padding: 18 }}>
-              <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 700, marginBottom: 8 }}>OCR EXTRACTED DETAILS</div>
+              <div style={{ fontSize: 11, color: "#6b7280", fontWeight: 700, marginBottom: 8 }}>OCR EXTRACTED DETAILS</div>
               <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 12 }}>
                 <tbody>
                   {[
@@ -1542,8 +1599,8 @@ function AddExpenseModal({ claimId, profile, onClose, onAdd }) {
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.58)", backdropFilter: "blur(3px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-      <div style={{ background: THEME.surface, borderRadius: 12, width: 700, maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.45)", border: `1px solid ${THEME.border}` }}>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.10)", backdropFilter: "blur(3px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
+      <div style={{ background: THEME.surface, borderRadius: 12, width: 700, maxHeight: "92vh", overflow: "auto", boxShadow: "0 20px 60px rgba(17,24,39,0.08)", border: `1px solid ${THEME.border}` }}>
         <div style={{ padding: "18px 24px", borderBottom: `1px solid ${THEME.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: THEME.textPrimary }}>Add Expense</h2>
           <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: THEME.textMuted }}>✕</button>
@@ -1618,7 +1675,7 @@ function AddExpenseModal({ claimId, profile, onClose, onAdd }) {
 
           <div style={{ marginBottom: 14 }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: THEME.textSecond, marginBottom: 5 }}>
-              Business Purpose <span style={{ color: "#ef4444" }}>*</span>
+              Business Purpose <span style={{ color: "#dc2626" }}>*</span>
             </label>
             <textarea
               value={form.business_purpose} onChange={e => set("business_purpose", e.target.value)}
@@ -1626,13 +1683,13 @@ function AddExpenseModal({ claimId, profile, onClose, onAdd }) {
               rows={3}
               style={{
                 width: "100%", padding: "8px 11px", fontSize: 13,
-                border: `1px solid ${errors.business_purpose ? "#ef4444" : THEME.border}`,
-                background: errors.business_purpose ? "#2a1010" : THEME.surface,
+                border: `1px solid ${errors.business_purpose ? "#dc2626" : THEME.border}`,
+                background: errors.business_purpose ? "#fef2f2" : THEME.surface,
                 color: THEME.textPrimary,
                 borderRadius: 6, boxSizing: "border-box", resize: "vertical", outline: "none"
               }}
             />
-            {errors.business_purpose && <div style={{ fontSize: 11, color: "#ef4444", marginTop: 3 }}>{errors.business_purpose}</div>}
+            {errors.business_purpose && <div style={{ fontSize: 11, color: "#dc2626", marginTop: 3 }}>{errors.business_purpose}</div>}
           </div>
         </div>
 
@@ -1652,7 +1709,7 @@ function AddExpenseModal({ claimId, profile, onClose, onAdd }) {
 }
 
 // ─── Claim Detail Page ────────────────────────────────────────────────────────
-function ClaimDetail({ claim, setPage, profile }) {
+function ClaimDetail({ claim, setPage, profile, isMobile = false }) {
   const [expenses, setExpenses] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAddExpense, setShowAddExpense] = useState(false)
@@ -1765,7 +1822,7 @@ function ClaimDetail({ claim, setPage, profile }) {
             {showDropdown && (
               <div style={{
                 position: "absolute", top: "calc(100% + 4px)", right: 0, background: THEME.surface,
-                border: `1px solid ${THEME.border}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+                border: `1px solid ${THEME.border}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(17,24,39,0.08)",
                 width: 200, zIndex: 100, overflow: "hidden"
               }}>
                 {[
@@ -1808,7 +1865,7 @@ function ClaimDetail({ claim, setPage, profile }) {
           { label: "Expenses", value: `${expenses.length} item${expenses.length !== 1 ? "s" : ""}`, Icon: Receipt },
           { label: "Submitted", value: currentClaim.created_at?.split("T")[0] || "—", Icon: CalendarDays },
         ].map(s => (
-          <div key={s.label} style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 10, padding: "16px 18px", boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+          <div key={s.label} style={{ background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 10, padding: "16px 18px", boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, display: "flex", alignItems: "center", gap: 12 }}>
             <s.Icon size={20} strokeWidth={1.6} color={THEME.accent} />
             <div>
               <div style={{ fontSize: 11, color: THEME.textMuted }}>{s.label}</div>
@@ -1819,7 +1876,7 @@ function ClaimDetail({ claim, setPage, profile }) {
       </div>
 
       {/* AI Audit Summary */}
-      <div style={{ marginBottom: 16, background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 10, border: `1px solid ${THEME.border}`, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", overflow: "hidden" }}>
+      <div style={{ marginBottom: 16, background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 10, border: `1px solid ${THEME.border}`, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", overflow: "hidden" }}>
         <div style={{ padding: "12px 16px", borderBottom: `1px solid ${THEME.border}`, background: THEME.surfaceAlt }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: THEME.textPrimary }}>AI Compliance Summary</div>
         </div>
@@ -1846,13 +1903,13 @@ function ClaimDetail({ claim, setPage, profile }) {
       </div>
 
       {/* Expenses table */}
-      <div style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+      <div style={{ background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
         <div style={{ padding: "14px 20px", borderBottom: `1px solid ${THEME.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary }}>Expense Items</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: THEME.blue }}>{currentClaim.currency || "USD"} {total.toFixed(2)} total</div>
         </div>
         {loading ? (
-          <div style={{ padding: 32, textAlign: "center", color: "#9ca3af" }}>Loading expenses...</div>
+          <div style={{ padding: 32, textAlign: "center", color: "#6b7280" }}>Loading expenses...</div>
         ) : normalizedExpenses.length === 0 ? (
           <div style={{ padding: 64, textAlign: "center" }}>
             <div style={{ marginBottom: 10, display: "flex", justifyContent: "center" }}><Receipt size={34} strokeWidth={1.3} color={THEME.textMuted} /></div>
@@ -1912,7 +1969,7 @@ function ClaimDetail({ claim, setPage, profile }) {
                     ) : <span style={{ fontSize: 11, color: THEME.textMuted }}>None</span>}
                   </td>
                 </tr>,
-                <tr key={`audit-${exp.id}`} style={{ background: "rgba(255,255,255,0.02)", borderBottom: `1px solid ${THEME.border}` }}>
+                <tr key={`audit-${exp.id}`} style={{ background: "rgba(17,24,39,0.02)", borderBottom: `1px solid ${THEME.border}` }}>
                   <td colSpan={9} style={{ padding: "10px 14px" }}>
                     <div style={{ fontSize: 12, color: THEME.textPrimary, marginBottom: 3 }}><strong>Why {exp.normalizedStatus === "Approved" ? "approved" : "flagged"}:</strong> {exp.auditReason}</div>
                     <div style={{ fontSize: 12, color: THEME.textSecond }}><strong>Policy check:</strong> {exp.policyNote}</div>
@@ -1926,7 +1983,7 @@ function ClaimDetail({ claim, setPage, profile }) {
 
       {/* Purpose / Notes */}
       {currentClaim.purpose && (
-        <div style={{ marginTop: 16, background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 10, padding: "14px 18px", boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}` }}>
+        <div style={{ marginTop: 16, background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 10, padding: "14px 18px", boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}` }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: THEME.textMuted, marginBottom: 4 }}>BUSINESS PURPOSE</div>
           <div style={{ fontSize: 13, color: THEME.textSecond }}>{currentClaim.purpose}</div>
         </div>
@@ -2099,7 +2156,7 @@ function TripPlannerPage({ profile }) {
         ))}
       </div>
 
-      <div style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 12, border: `1px solid ${THEME.border}`, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", padding: 18, marginBottom: 16 }}>
+      <div style={{ background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 12, border: `1px solid ${THEME.border}`, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", padding: 18, marginBottom: 16 }}>
         {step === 1 && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Input label="Destination" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="e.g. New York" style={{ borderRadius: 8 }} />
@@ -2218,7 +2275,7 @@ function TripPlannerPage({ profile }) {
                   {!!(result.contextual_justification_prompts || []).length && (
                     <div style={{ padding: "10px 12px", borderRadius: 10, border: `1px solid ${THEME.border}`, background: "rgba(245,158,11,0.08)" }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: THEME.amber, marginBottom: 6 }}>Justification Prompts</div>
-                      <ul style={{ margin: 0, paddingLeft: 18, color: "#fcd34d", fontSize: 12, lineHeight: 1.7 }}>
+                      <ul style={{ margin: 0, paddingLeft: 18, color: "#b45309", fontSize: 12, lineHeight: 1.7 }}>
                         {(result.contextual_justification_prompts || []).map((item, i) => <li key={i}>{item}</li>)}
                       </ul>
                     </div>
@@ -2229,7 +2286,7 @@ function TripPlannerPage({ profile }) {
           </div>
         )}
 
-        {!!error && <div style={{ marginTop: 12, fontSize: 12, color: "#ef4444" }}>{error}</div>}
+        {!!error && <div style={{ marginTop: 12, fontSize: 12, color: "#dc2626" }}>{error}</div>}
         {!!tripWarning && <div style={{ marginTop: 8, fontSize: 12, color: THEME.amber }}>{tripWarning}</div>}
 
         <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2258,7 +2315,7 @@ function TripPlannerPage({ profile }) {
         </div>
       </div>
 
-      <div style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 12, border: `1px solid ${THEME.border}`, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", overflow: "hidden" }}>
+      <div style={{ background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 12, border: `1px solid ${THEME.border}`, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", overflow: "hidden" }}>
         <div style={{ padding: "12px 14px", borderBottom: `1px solid ${THEME.border}`, fontSize: 13, fontWeight: 700, color: THEME.textPrimary, display: "flex", alignItems: "center", gap: 6 }}>
           <CalendarDays size={14} /> Saved Pre-Trip Plans
         </div>
@@ -2340,7 +2397,7 @@ function AvailableExpensesPage() {
         </button>
       </div>
 
-      <div style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+      <div style={{ background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
         {loading ? (
           <div style={{ padding: 48, textAlign: "center", color: THEME.textMuted }}>Loading...</div>
         ) : expenses.length === 0 ? (
@@ -2554,7 +2611,7 @@ function NotificationsPage() {
         Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : "—"}
       </div>
 
-      <div style={{ background: "linear-gradient(135deg, #15151d 0%, #101018 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+      <div style={{ background: "linear-gradient(135deg, #ffffff 0%, #f6f7f9 100%)", borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
         {loading ? (
           <div style={{ padding: 48, textAlign: "center", color: THEME.textMuted }}>Loading notifications...</div>
         ) : items.length === 0 ? (
@@ -2648,14 +2705,14 @@ function ApprovalsPage() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: selected ? "1fr 360px" : "1fr", gap: 20 }}>
-        <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+        <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
           {loading ? (
             <div style={{ padding: 48, textAlign: "center", color: THEME.textMuted }}>Loading...</div>
           ) : approvals.length === 0 ? (
             <div style={{ padding: 64, textAlign: "center" }}>
               <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }}><CheckCircle2 size={36} strokeWidth={1.3} color={THEME.green} /></div>
               <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>No records found</div>
-              <div style={{ fontSize: 13, color: "#9ca3af" }}>No claims are waiting for approval</div>
+              <div style={{ fontSize: 13, color: "#6b7280" }}>No claims are waiting for approval</div>
             </div>
           ) : (
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -2691,7 +2748,7 @@ function ApprovalsPage() {
         </div>
 
         {selected && (
-          <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, alignSelf: "start", overflow: "hidden" }}>
+          <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, alignSelf: "start", overflow: "hidden" }}>
             <div style={{ padding: "14px 18px", borderBottom: `1px solid ${THEME.border}`, display: "flex", justifyContent: "space-between" }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary }}>Review Claim</div>
               <button onClick={() => setSelected(null)} style={{ background: "none", border: "none", cursor: "pointer", color: THEME.textMuted, fontSize: 18 }}>✕</button>
@@ -2771,13 +2828,19 @@ function FinanceDashboard({ session }) {
 
   const handleOverride = async () => {
     if (!selected || !overrideStatus) return
-    const token = await getToken()
-    await axios.post(`${API}/claims/${selected.id}/override`,
-      { status: overrideStatus, comment: overrideComment },
-      { headers: { Authorization: `Bearer ${token}` } }
-    )
-    await fetchClaims()
-    setOverrideStatus(""); setOverrideComment("")
+    try {
+      const token = await getToken()
+      await axios.post(`${API}/claims/${selected.id}/override`,
+        { status: overrideStatus, comment: overrideComment },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      await fetchClaims()
+      setOverrideStatus(""); setOverrideComment("")
+    } catch (e) {
+      // Same idiom as fetchClaims above. Without this the override silently became an
+      // unhandled rejection and the form just sat there looking like nothing happened.
+      console.error(e)
+    }
   }
 
   const filtered = filter === "All" ? claims : claims.filter(c => normalizeStatus(c.status) === filter)
@@ -2805,7 +2868,7 @@ function FinanceDashboard({ session }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: selected ? "1fr 380px" : "1fr", gap: 20 }}>
-        <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
+        <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, overflow: "hidden" }}>
           <div style={{ padding: "12px 16px", borderBottom: `1px solid ${THEME.border}`, display: "flex", gap: 8 }}>
             {["All", "Draft", "Flagged", "Approved", "Rejected"].map(f => (
               <button key={f} onClick={() => setFilter(f)} style={{
@@ -2846,7 +2909,7 @@ function FinanceDashboard({ session }) {
         </div>
 
         {selected && (
-          <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, alignSelf: "start", overflow: "hidden" }}>
+          <div style={{ background: THEME.surface, borderRadius: 12, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, alignSelf: "start", overflow: "hidden" }}>
             <div style={{ padding: "14px 18px", borderBottom: `1px solid ${THEME.border}`, display: "flex", justifyContent: "space-between" }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: THEME.textPrimary }}>Claim Detail</div>
               <button onClick={() => setSelected(null)} style={{ background: "none", border: "none", cursor: "pointer", color: THEME.textMuted, fontSize: 18 }}>✕</button>
@@ -3025,7 +3088,7 @@ function PolicyPage({ session, profile }) {
         </div>
       )}
 
-      <div style={{ background: THEME.surface, borderRadius: 12, padding: 24, boxShadow: "0 1px 3px rgba(0,0,0,0.24)", border: `1px solid ${THEME.border}`, marginBottom: 16 }}>
+      <div style={{ background: THEME.surface, borderRadius: 12, padding: 24, boxShadow: "0 1px 3px rgba(17,24,39,0.06)", border: `1px solid ${THEME.border}`, marginBottom: 16 }}>
         <div
           onClick={() => document.getElementById("policyFile").click()}
           style={{ border: `2px dashed ${THEME.border}`, borderRadius: 8, padding: 36, textAlign: "center", cursor: "pointer", background: THEME.surfaceAlt, marginBottom: 16 }}
@@ -3212,11 +3275,15 @@ function AnalyticsPage({ profile, isMobile = false }) {
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export default function App() {
   const isMobile = useIsMobile(900)
-  const [session, setSession] = useState(null)
+  // Seeded straight from localStorage, synchronously, so a signed-in user paints the
+  // app on the first frame. Waiting on supabase.auth.getSession() here is what made
+  // every load sit at the splash for the full restore timeout: that call queues on a
+  // navigator lock that stays contended across tabs and, once wedged, never clears.
+  const [session, setSession] = useState(readPersistedSession)
   const [profile, setProfile] = useState(null)
   const [page, setPage] = useState("dashboard")
   const [currentClaim, setCurrentClaim] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(() => !readPersistedSession())
   const [apiError, setApiError] = useState("")
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
@@ -3310,16 +3377,33 @@ export default function App() {
       })
     }
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (session) {
-        setSession(session)
-        await loadProfile(session)
-      }
-      setLoading(false)
-    })
+    let cancelled = false
+
+    // No getSession() call here on purpose. It queues on the SDK's navigator lock,
+    // which stays wedged across tabs, so it reliably never resolved and held the whole
+    // app at the splash. The session was already seeded from storage above; the SDK
+    // emits INITIAL_SESSION through this listener once its own init completes, plus
+    // TOKEN_REFRESHED on every silent refresh, so the lock resolving is an upgrade
+    // rather than something first paint depends on.
+    const seeded = readPersistedSession()
+    rememberSession(seeded)
+    if (seeded) loadProfile(seeded)
+
+    // Floor under the splash for the no-stored-session case, where the SDK's own
+    // INITIAL_SESSION is the only thing that would clear it — and that event is itself
+    // behind the lock. Showing the login form a beat early costs nothing: if a session
+    // does arrive afterwards, the listener above renders straight into the app.
+    const splashFloor = setTimeout(() => {
+      if (!cancelled) setLoading(false)
+    }, SPLASH_FLOOR_MS)
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_e, session) => {
+      if (cancelled) return
+      rememberSession(session)
       setSession(session)
+      // Whatever the event says is now authoritative — including a null session, which
+      // is how a sign-out in another tab reaches this one.
+      setLoading(false)
       if (!session) {
         setProfile(null)
         setPage("dashboard")
@@ -3329,13 +3413,29 @@ export default function App() {
     })
 
     return () => {
+      cancelled = true
+      clearTimeout(splashFloor)
       authListener.subscription.unsubscribe()
     }
   }, [])
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
-    setSession(null); setProfile(null)
+    // signOut() goes through the same wedged navigator lock as getSession(), so
+    // awaiting it before clearing state is why the button appeared dead. Sign out
+    // locally first — dropping the session state and the stored token is what actually
+    // logs the user out of this browser — then let the SDK's own call settle whenever
+    // it can. If it never does, the user is still signed out here and on reload.
+    setSession(null)
+    setProfile(null)
+    setPage("dashboard")
+    rememberSession(null)
+    clearPersistedSession()
+
+    try {
+      await supabase.auth.signOut()
+    } catch (err) {
+      console.error("Server-side sign-out did not complete:", err)
+    }
   }
 
   if (loading) return (
@@ -3396,7 +3496,7 @@ export default function App() {
       {isMobile && mobileNavOpen && (
         <div
           onClick={() => setMobileNavOpen(false)}
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.46)", zIndex: 1190 }}
+          style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.08)", zIndex: 1190 }}
         />
       )}
       {isMobile && mobileNavOpen && (
@@ -3421,7 +3521,7 @@ export default function App() {
             >
               ☰ Menu
             </button>
-            <div style={{ fontWeight: 700, letterSpacing: "0.02em" }}><span style={{ color: "#E5E7EB" }}>AUDI</span><span style={{ color: "#84CC16" }}>XA</span></div>
+            <div style={{ fontWeight: 700, letterSpacing: "0.02em" }}><span style={{ color: "#111827" }}>AUDI</span><span style={{ color: "#4d7a00" }}>XA</span></div>
           </div>
         )}
 
@@ -3430,7 +3530,7 @@ export default function App() {
         {page === "tripPlanner"  && <TripPlannerPage profile={profile} />}
         {page === "claims"       && <ClaimsPage profile={profile} setPage={setPage} setCurrent={setCurrentClaim} isMobile={isMobile} />}
         {page === "submitExpense" && <SubmitExpensePage profile={profile} setPage={setPage} setCurrent={setCurrentClaim} />}
-        {page === "claimDetail"  && currentClaim && <ClaimDetail claim={currentClaim} setPage={setPage} profile={profile} />}
+        {page === "claimDetail"  && currentClaim && <ClaimDetail claim={currentClaim} setPage={setPage} profile={profile} isMobile={isMobile} />}
         {page === "expenses"     && <AvailableExpensesPage />}
         {page === "analytics"    && <AnalyticsPage profile={profile} isMobile={isMobile} />}
         {page === "approvals"    && <ApprovalsPage />}

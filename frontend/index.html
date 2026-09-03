@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/audixa-logo.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -10,9 +11,82 @@
       rel="stylesheet"
     />
     <title>Audixa</title>
+    <style>
+      html, body { margin: 0; background: #ffffff; }
+      #boot-error {
+        display: none;
+        min-height: 100vh;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        color: #111827;
+        font-family: Inter, system-ui, -apple-system, sans-serif;
+        line-height: 1.6;
+      }
+      #boot-error .card {
+        max-width: 620px;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 28px 30px;
+      }
+      #boot-error h1 { font-size: 20px; margin: 0 0 6px; font-weight: 600; }
+      #boot-error p { color: #4b5563; font-size: 14px; margin: 0 0 14px; }
+      #boot-error pre {
+        background: #f6f7f9;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 14px;
+        font-size: 13px;
+        color: #ef4444;
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+
+    <!--
+      Last-resort white-screen guard. If the module bundle 404s or throws at
+      import time, React never mounts and the page would otherwise render as a
+      blank void with the reason buried in the console. Surface it instead.
+    -->
+    <div id="boot-error">
+      <div class="card">
+        <h1>Audixa failed to start</h1>
+        <p>The app bundle did not load. Details:</p>
+        <pre id="boot-error-detail">Unknown error — check the browser console and the Network tab.</pre>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        var shown = false
+        function show(detail) {
+          if (shown) return
+          var root = document.getElementById('root')
+          if (root && root.childElementCount > 0) return
+          shown = true
+          if (detail) document.getElementById('boot-error-detail').textContent = detail
+          document.getElementById('boot-error').style.display = 'flex'
+        }
+        window.addEventListener('error', function (e) {
+          if (e && e.target && e.target.tagName === 'SCRIPT') {
+            show('Failed to load script: ' + (e.target.src || 'unknown') +
+                 '\nCheck that Vercel is serving the built assets (outputDirectory: frontend/dist).')
+          } else if (e && e.message) {
+            show(e.message)
+          }
+        }, true)
+        window.addEventListener('unhandledrejection', function (e) {
+          show(String((e && e.reason && e.reason.message) || e.reason || 'Unhandled promise rejection'))
+        })
+        setTimeout(function () { show(null) }, 8000)
+      })()
+    </script>
+
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
