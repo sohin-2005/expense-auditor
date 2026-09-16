@@ -3,6 +3,7 @@ import importlib
 from fastapi.testclient import TestClient
 
 import ai_provider
+import config
 import main
 
 
@@ -29,9 +30,9 @@ def test_no_ai_provider_configured_marks_health_degraded(monkeypatch):
     # keys from backend/.env on reload, undoing the deletions above.
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
 
-    reloaded = importlib.reload(main)
+    importlib.reload(config)
     try:
-        with TestClient(reloaded.app) as client:
+        with TestClient(main.app) as client:
             resp = client.get("/health")
 
         assert resp.status_code == 200
@@ -44,7 +45,7 @@ def test_no_ai_provider_configured_marks_health_degraded(monkeypatch):
         # `main`.
         monkeypatch.undo()
         ai_provider._ACTIVE_CONFIG = None
-        importlib.reload(main)
+        importlib.reload(config)
 
 
 def test_malformed_ai_timeout_env_var_does_not_crash_import(monkeypatch):
@@ -63,17 +64,17 @@ def test_malformed_ai_timeout_env_var_does_not_crash_import(monkeypatch):
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
 
     try:
-        reloaded = importlib.reload(main)  # must not raise
+        importlib.reload(config)  # must not raise
         assert not any(
-            "AI provider config failed to load" in e for e in reloaded.BOOT_ERRORS
+            "AI provider config failed to load" in e for e in config.BOOT_ERRORS
         )
-        with TestClient(reloaded.app) as client:
+        with TestClient(main.app) as client:
             resp = client.get("/health")
         assert resp.status_code == 200
     finally:
         monkeypatch.undo()
         ai_provider._ACTIVE_CONFIG = None
-        importlib.reload(main)
+        importlib.reload(config)
 
 
 def test_startup_swallows_check_models_exception_and_app_still_serves(monkeypatch):

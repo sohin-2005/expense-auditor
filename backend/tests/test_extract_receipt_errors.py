@@ -5,12 +5,26 @@ import pytest
 from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
-import main
+import deps
+import routers.expenses as expense_routes
+import services.receipts as receipts
 from ai_provider import AIUnavailableError, TEXT, VISION
 
 
 class _FakeUser:
     id = "00000000-0000-0000-0000-000000000000"
+
+
+def _principal(role="employee", company_id="default"):
+    """extract_receipt takes a Principal now, not a raw Supabase user.
+
+    Built directly rather than through get_principal() so these tests keep
+    exercising the error contract without needing a profiles table.
+    """
+    return deps.Principal(
+        _FakeUser(),
+        {"id": _FakeUser.id, "role": role, "company_id": company_id},
+    )
 
 
 def _upload(filename, content_type, content=b"fake-bytes-not-a-real-file"):
@@ -22,13 +36,13 @@ def _upload(filename, content_type, content=b"fake-bytes-not-a-real-file"):
 
 
 def _run_extract(up):
-    return asyncio.run(main.extract_receipt(
+    return asyncio.run(expense_routes.extract_receipt(
         file=up,
         business_purpose="client meeting lunch",
         employee_name="Test User",
         company_id="default",
         claim_id="",
-        user=_FakeUser(),
+        principal=_principal(),
     ))
 
 
@@ -40,7 +54,7 @@ def _isolated_upload_dir(tmp_path, monkeypatch):
     anything else; these tests must not litter the real backend/uploads/
     folder.
     """
-    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr(receipts, "UPLOAD_DIR", tmp_path)
 
 
 def test_vision_ai_unavailable_raises_503_with_vision_message(monkeypatch):
@@ -53,7 +67,7 @@ def test_vision_ai_unavailable_raises_503_with_vision_message(monkeypatch):
     def _boom(*args, **kwargs):
         raise AIUnavailableError(task=VISION, failures=["gemini/gemini-3.5-flash: boom"])
 
-    monkeypatch.setattr(main, "call_ai_json", _boom)
+    monkeypatch.setattr(expense_routes, "call_ai_json", _boom)
 
     up = _upload("receipt.jpg", "image/jpeg")
 
@@ -78,9 +92,9 @@ def test_text_ai_unavailable_raises_503_with_text_message(monkeypatch):
             failures=["gemini/gemini-3.5-flash: boom", "groq/qwen: boom"],
         )
 
-    monkeypatch.setattr(main, "call_ai_json", _boom)
+    monkeypatch.setattr(expense_routes, "call_ai_json", _boom)
     # Avoid depending on real PDF parsing to reach the text-task call site.
-    monkeypatch.setattr(main, "extract_text_from_pdf", lambda *a, **k: "some receipt text")
+    monkeypatch.setattr(expense_routes, "extract_text_from_pdf", lambda *a, **k: "some receipt text")
 
     up = _upload("receipt.pdf", "application/pdf")
 
@@ -103,7 +117,7 @@ def test_unexpected_error_raises_500_without_leaking_internal_detail(monkeypatch
     def _boom(*args, **kwargs):
         raise RuntimeError(secret_detail)
 
-    monkeypatch.setattr(main, "call_ai_json", _boom)
+    monkeypatch.setattr(expense_routes, "call_ai_json", _boom)
 
     up = _upload("receipt.jpg", "image/jpeg")
 

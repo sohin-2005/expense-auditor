@@ -66,13 +66,39 @@ Every decision carries a `reason` and a `policy_snippet`, so no verdict is a bla
 
 ### Roles
 
-Set at signup and stored on the `profiles` row. `manager` and `finance` are treated
-identically by the UI gate (`isFinance` in `App.jsx`) — both additionally see the
-**Approvals** and **Finance Dashboard** pages, and company-wide analytics.
+Stored on the `profiles` row and **enforced server-side**. Every privileged endpoint
+depends on `require_finance`, which reads the caller's role from `profiles` on each
+request — never from the token, a form field, or a query parameter. `isFinance` in
+`App.jsx` still hides navigation, but it is now cosmetic: bypassing it gets a 403.
 
-- `employee` — submit expenses and claims, plan trips, view own analytics.
-- `manager` / `finance` — the above, plus approvals, claim overrides, the finance
-  dashboard, and `scope=all` analytics.
+- `employee` — submits their own expenses, claims, mileage and trips; reads the
+  company policy; sees only their own spend.
+- `manager` — the above, plus approving other people's claims.
+- `finance` — approves, and owns the policy, the exchange rates and company-wide
+  reporting.
+- `admin` — manages people, roles and deployment configuration.
+
+**Admin is deliberately not a superset of finance.** Whoever can grant approval
+rights should not also be able to use them, or one account can quietly give
+itself the power to approve its own spend. `require_finance`, `require_policy_editor`
+and `require_admin` are three separate gates, and
+`tests/test_roles_and_features.py` pins the split down in both directions.
+
+**Roles cannot be self-assigned.** Signup always creates an `employee`;
+`backend/db/profiles_authorization.sql` enforces that with RLS plus a trigger that
+pins `role` and `company_id` against client writes. Promotion goes through
+`POST /admin/users/{user_id}/role`, which requires an existing **admin** — so the
+first one is promoted by hand in the SQL editor. That file's closing comment has
+the statements.
+
+`GET /me` returns the caller's capability set, and the navigation renders from
+that rather than from a role string in the browser. It is a rendering hint only:
+every endpoint still checks for itself, so a tampered response changes what is
+drawn, never what is allowed.
+
+Scope is always derived, never requested: an employee calling
+`/analytics/summary?scope=all` receives their own data rather than an error, and for
+an approver `all` means their own company, not every company in the database.
 
 ---
 
@@ -104,28 +130,62 @@ identically by the UI gate (`isFinance` in `App.jsx`) — both additionally see 
 **Request flow for a receipt upload:**
 
 1. The browser sends the file with the Supabase access token as `Authorization: Bearer …`.
-2. `get_current_user()` validates the token against Supabase and yields the user.
-3. The file is written to `backend/uploads/` and served back at `/uploads/<uuid>.<ext>`.
+2. `get_principal()` validates the token against Supabase, then reads the caller's
+   `profiles` row for their role and `company_id`. Both come from the server, never
+   from the request — the form's `company_id` field is accepted and ignored.
+3. `store_receipt()` writes the file to the private Supabase Storage bucket and
+   stores the object path on the expense row. Reading it later goes through
+   `GET /receipts/{expense_id}`, which checks access and mints a 5-minute signed URL.
 4. PDFs are text-extracted locally; images are base64'd for the vision model.
-5. `get_policy()` fetches the company policy (cached 5 minutes) and
-   `get_policy_context()` trims it to the sections keyword-relevant to this receipt.
-6. `call_ai_json()` runs OCR, then a second call runs the policy audit.
-7. `resolve_expense_status()` normalizes the verdict, `apply_duplicate_check()` looks
-   for a prior identical expense, and the row is inserted.
+5. `build_policy_context()` retrieves the policy passages relevant to this receipt —
+   hybrid vector + full-text search over `policy_chunks`, fused by RRF — and returns
+   the chunks alongside the text, so the citation can be checked afterwards. In
+   `shadow` mode it also runs the old keyword trimmer and logs the difference.
+6. `call_ai_json()` runs OCR, then a second call runs the policy audit against the
+   numbered chunks. `apply_citation()` verifies the id the model returned was one it
+   was actually shown, replaces `policy_snippet` with the cited text, and downgrades
+   an approval to Flagged if the citation does not check out.
+7. `resolve_expense_status()` normalizes the verdict, `apply_fx()` converts the amount
+   into the base currency, `apply_duplicate_check()` looks for a prior identical
+   expense, and the row is inserted.
 8. If the expense belongs to a claim, `sync_claim_status_totals()` recomputes the
    claim's total and status.
 
 **Design decisions worth knowing:**
 
+- **Nothing blocking runs on the event loop.** Handlers that need no `await` are
+  plain `def`, so FastAPI runs them in its threadpool and their synchronous Supabase
+  calls cannot stall the process. The five that must stay `async def` — they await an
+  upload or an AI call — put every blocking call underneath through `offload()`. AI
+  completions are natively async (`AsyncOpenAI`) with one pooled client per provider.
+  Before this, a single 10–12s vision call froze every other request in the
+  deployment, `/health` included.
 - **Boot never crashes on bad config.** Missing env vars are collected into
   `BOOT_ERRORS` and reported by `/health` as `"degraded"`, instead of killing the
   process and leaving the frontend with an unexplained "cannot reach backend".
-- **Schema-drift tolerance.** `insert_*_with_schema_fallback()` retries an insert
-  without a column Postgres says doesn't exist, so a Supabase table missing an
-  optional column degrades instead of 500-ing.
-- **Policy retrieval is keyword-first, not vector-based.** Context is trimmed to
-  ~12 KB (fast mode) before every call — smaller prompts are faster, cheaper, and
-  measurably more reliable than pushing the whole policy each time.
+- **The schema is in version control.** `backend/db/001_init.sql` defines every
+  column the API writes, so a mismatch is a deployment fault that says so rather
+  than a row that silently loses a field. This replaced
+  `insert_*_with_schema_fallback()`, which retried an insert up to twelve times,
+  stripping whichever column Postgres named — so a table missing an optional column
+  produced an expense with no policy_snippet and an HTTP 200.
+- **Policy retrieval is hybrid, and verdicts cite it.** The policy is chunked on its
+  own headings at upload, embedded once, and searched with vector + full-text
+  rankings fused by RRF (`match_policy_chunks`). The audit prompt numbers the
+  retrieved chunks and the model must name the one it relied on; `apply_citation()`
+  checks that id was actually retrieved and **downgrades an approval to Flagged when
+  it was not**. So `policy_snippet` is text copied out of the policy, not text the
+  model wrote — and a receipt carrying injected instructions cannot manufacture a
+  chunk id that was in front of the model.
+  `POLICY_RETRIEVAL_MODE` defaults to `shadow`: both paths run, the old one decides,
+  and disagreements are logged. Switch to `vector` once those logs look right.
+- **Money is stored twice.** Each expense keeps its original `amount`/`currency` and
+  a `amount_base` converted at the rate in force on its transaction date. Only
+  `amount_base` is ever summed; rows with no rate on file are excluded and reported,
+  never added at an implied 1:1.
+- **Aggregation happens in Postgres.** `analytics_summary` (db/004_analytics.sql)
+  returns one row instead of streaming the table into a Python loop that silently
+  stopped at PostgREST's 1000-row cap.
 - **The claims table is authoritative for status.** Expense-derived status is a
   helper signal, never a hard overwrite of a manual manager decision.
 
@@ -143,19 +203,34 @@ expense-auditor/
 │                                sync so a root-dir deploy also builds
 │
 ├── backend/                     FastAPI service
-│   ├── main.py                  all routes, auditing, claim lifecycle (~1.7k lines)
-│   ├── ai_provider.py           provider-agnostic JSON completions + fallback chain
+│   ├── main.py                  app assembly only — CORS, mount, routers (~75 lines)
+│   ├── config.py                env, tuning constants, BOOT_ERRORS, TTLCache
+│   ├── db.py                    Supabase client, offload(), insert_row, paging
+│   ├── deps.py                  Principal, require_finance, claim/ownership loaders
+│   ├── domain/                  pure rules, no I/O — trivially testable
+│   │   ├── status.py            canonical/resolve/derive status, compose_reason
+│   │   ├── money.py             amount parsing, currency inference, FX conversion
+│   │   ├── duplicates.py        prior-identical-expense detection
+│   │   └── util.py              paging and coercion helpers
+│   ├── services/
+│   │   ├── policy.py            versioning, chunk ingest, hybrid retrieval
+│   │   ├── audit.py             prompts + citation verification
+│   │   ├── receipts.py          PDF text, object storage, signed URLs
+│   │   └── claims.py            claim totals and status sync
+│   ├── routers/                 policy · trips · expenses · claims · admin ·
+│   │                            analytics · health
+│   ├── ai_provider.py           JSON completions, embeddings, fallback chain
+│   ├── policy_rag.py            chunking, retrieval queries, citation checking
 │   ├── requirements.txt         pinned, exact versions
 │   ├── pytest.ini               testpaths = tests
 │   ├── Procfile                 uvicorn start command
 │   ├── .env.example             template — copy to backend/.env
 │   ├── db/
-│   │   └── travel_plans.sql     schema for the trip-planning table
-│   ├── tests/
-│   │   ├── test_ai_provider.py       31 tests — chains, fallback, parsing, config
-│   │   ├── test_startup.py            3 tests — catalog check never blocks boot
-│   │   └── test_extract_receipt_errors.py   3 tests — error-handler contract
-│   └── uploads/                 runtime receipt storage (gitignored, ephemeral)
+│   │   ├── 001_init.sql … 005_policy_chunks.sql   schema, FX, analytics, RAG
+│   │   ├── travel_plans.sql     schema for the trip-planning table
+│   │   └── profiles_authorization.sql  RLS + trigger pinning role/company_id
+│   ├── tests/                   99 tests
+│   └── uploads/                 legacy receipt storage (gitignored, ephemeral)
 │
 ├── frontend/                    React + Vite SPA
 │   ├── index.html               boot guard that reports a failed JS bundle
@@ -165,9 +240,14 @@ expense-auditor/
 │   ├── public/audixa-logo.png
 │   └── src/
 │       ├── main.jsx             root render, setup notice, error boundary
-│       ├── App.jsx              every page and component (~3.5k lines)
+│       ├── App.jsx              shell + routing only (~310 lines)
 │       ├── supabase.js          client, session persistence, config guards
-│       └── index.css
+│       ├── index.css
+│       ├── lib/                 api.js (base URL + getToken) · format.js ·
+│       │                        useIsMobile.js
+│       ├── theme/tokens.js      THEME palette and primaryBtnStyle
+│       ├── components/ui.jsx    StatusBadge · Input · Select
+│       └── pages/               16 modules, route-level ones lazy-loaded
 │
 └── docs/
     ├── APPROACH.md              problem framing and design rationale
@@ -222,9 +302,30 @@ exactly which variable is missing.
 
 ### 3. Database
 
-In the Supabase SQL editor, run [`backend/db/travel_plans.sql`](backend/db/travel_plans.sql).
-Then create the `profiles`, `policies`, `expenses` and `claims` tables — columns are
-listed in [Database schema](#database-schema) below.
+In the Supabase SQL editor, run these **in order**. Each is idempotent, so an
+existing project converges rather than breaking.
+
+| # | File | What it does |
+| --- | --- | --- |
+| 1 | [`001_init.sql`](backend/db/001_init.sql) | Every table and column the API writes, plus the indexes `expenses` and `claims` never had. Required before the app can stop guessing at its own schema. |
+| 2 | [`002_normalize_expense_status.sql`](backend/db/002_normalize_expense_status.sql) | Normalizes `expenses.status` so reads can trust it. Aggregation cannot move into Postgres while the stored verdict differs from the one the app believes. |
+| 3 | [`003_fx.sql`](backend/db/003_fx.sql) | `fx_rates` plus the base-currency columns. **Seed a rate for every currency you use** — its closing comment has the statement. |
+| 4 | [`004_analytics.sql`](backend/db/004_analytics.sql) | The `analytics_summary` aggregation function. Without it `/analytics/summary` returns 503. |
+| 5 | [`005_policy_chunks.sql`](backend/db/005_policy_chunks.sql) | pgvector, `policy_chunks`, the hybrid `match_policy_chunks` function, and the citation columns on `expenses`. **Re-upload your policy afterwards** — chunks are written at upload time, so existing policies have none. |
+| 6 | [`006_employee_fields.sql`](backend/db/006_employee_fields.sql) | Missing-receipt declarations, mileage, cost centres, reimbursement tracking, and the `mileage_rates` table. **Seed a mileage rate** — its closing comment has the statement. |
+| 7 | [`007_profiles_and_recovery.sql`](backend/db/007_profiles_and_recovery.sql) | Profile fields (phone, job title, company name, photo) and security-question password recovery. Also create a **private `avatars` storage bucket**. |
+| 8 | [`travel_plans.sql`](backend/db/travel_plans.sql) | The trip-planning table. |
+| 9 | [`profiles_authorization.sql`](backend/db/profiles_authorization.sql) | RLS and the trigger that stop users granting themselves a role. |
+
+Step 9 is **required, not optional**. Without it the browser can still write its own
+`profiles.role`, and every server-side role check downstream is trivially bypassed by
+signing up as finance. Its closing comment has the one-off statement that promotes
+your first **administrator** and your first finance user — nobody can self-assign a role afterwards.
+
+Then, under **Storage → New bucket**, create a bucket named `receipts` with **Public
+bucket OFF**. Receipts are served through short-lived signed URLs gated on
+ownership, so a public bucket would undo that. Set `SUPABASE_RECEIPT_BUCKET` if you
+name it something else.
 
 ### 4. Frontend
 
@@ -368,7 +469,7 @@ Every endpoint except `/`, `/health` and the icon routes requires
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/upload-policy` | Multipart `file` (PDF) + `company_id`. Extracts text, upserts, warms the cache. 400 if the PDF has no extractable text. |
+| `POST` | `/upload-policy` | **Approvers only.** Multipart `file` (PDF). Extracts text, upserts, warms the cache. `company_id` comes from the caller's profile; any form value is ignored. 400 if the PDF has no extractable text. |
 | `GET` | `/policy/{company_id}` | Stored policy metadata and preview. |
 | `POST` | `/policy/ask` | `{ question, company_id }` → grounded answer. |
 
@@ -384,6 +485,7 @@ Every endpoint except `/`, `/health` and the icon routes requires
 | `POST` | `/expenses/{id}/detach` | Detach and return to available. |
 | `DELETE` | `/expenses/{id}` | Delete an expense. |
 | `GET` | `/expenses/export.csv` | The caller's own expenses as a CSV download. |
+| `GET` | `/receipts/{expense_id}` | `{"url", "expires_in"}` — a 5-minute signed URL for that receipt. The owner, or an approver in the same company. 404 if the receipt predates object storage and its file is gone. |
 
 ### Claims
 
@@ -393,8 +495,9 @@ Every endpoint except `/`, `/health` and the icon routes requires
 | `GET` | `/claims/my` | Caller's claims, paginated. |
 | `GET` | `/claims` | All claims (management views). |
 | `POST` | `/claims/{id}/submit` | Draft → Submitted. |
-| `POST` | `/claims/{id}/override` | Manager/finance status override. |
-| `GET` | `/approvals` | Claims awaiting a decision. |
+| `POST` | `/claims/{id}/override` | **Approvers only**, own company only, and never on your own claim (403). |
+| `GET` | `/approvals` | **Approvers only.** Claims awaiting a decision, scoped to the caller's company. |
+| `POST` | `/admin/users/{user_id}/role` | **Approvers only.** Body `{"role": "employee"\|"manager"\|"finance"}`. Same company only; you cannot change your own. The only way to grant a role once `profiles_authorization.sql` is applied. |
 
 ### Trips and analytics
 
@@ -402,7 +505,7 @@ Every endpoint except `/`, `/health` and the icon routes requires
 | --- | --- | --- |
 | `POST` | `/trip-plans/generate` | `{ destination, start_date, end_date, business_purpose, company_id, activities, expensive_choices }` → plan + compliance score, persisted. |
 | `GET` | `/trip-plans/my` | Caller's saved plans. |
-| `GET` | `/analytics/summary` | `scope=my` (default, caller's own) or `scope=all` (company-wide). Compliance rate plus category/vendor/month breakdowns. |
+| `GET` | `/analytics/summary` | `scope=my` (default) or `scope=all`. `all` is honoured only for approvers and means their own company; everyone else silently gets their own data. The response echoes the scope actually applied. |
 
 Pagination: `limit` and `offset` are clamped by `sanitize_paging()` to a max of 500;
 `limit=0` means "server default".
@@ -498,6 +601,7 @@ suite runs offline and deterministically.
 | `tests/test_ai_provider.py` | Chain construction, fallback order, vision having no fallback, `AIUnavailableError`, JSON recovery, env parsing, catalog checks. |
 | `tests/test_startup.py` | The startup catalog hook never blocks or crashes boot. |
 | `tests/test_extract_receipt_errors.py` | `/extract-receipt`'s exception-handler contract — a provider outage yields 503, not 500. |
+| `tests/test_authorization.py` | The role gate, claim ownership, self-approval, and analytics scope derivation. Each test names the call that used to succeed. |
 
 ---
 
@@ -540,18 +644,27 @@ sync, so a breaking upstream release cannot kill a build with no change on your 
 
 ## Known limitations
 
-- **Receipt files are ephemeral in production.** `backend/uploads/` sits on Render's
-  ephemeral disk, so images are lost on every restart, redeploy and cold-start
-  recovery. Audit results in Supabase survive; only the files disappear. The proper
-  fix is Supabase Storage or a Render persistent disk (paid).
+- **Receipts uploaded before Supabase Storage are gone.** New receipts go to a
+  private bucket and are served through signed URLs. Anything uploaded earlier was
+  written to Render's ephemeral disk and did not survive the next deploy; those rows
+  now return a 404 explaining why. If no bucket is reachable, uploads still fall back
+  to that ephemeral disk and log a warning — check for it before trusting the setup.
+- **Legacy `/uploads` files are unauthenticated.** The static mount stays so
+  pre-storage receipts still open where they exist. Anything reached through
+  `GET /receipts/{expense_id}` is ownership-checked; the mount is not, and can be
+  removed once no rows reference it.
 - **Vision has no fallback.** No `GEMINI_API_KEY`, no image receipts. PDF and manual
   entry still work via the text chain.
 - **Free-tier cold starts.** The first request after ~15 min idle takes 30–60 s.
-- **Policy retrieval is keyword-based**, not semantic — an unusually worded policy
-  section can be missed by the context trimmer.
-- **Two large files.** `backend/main.py` (~1.7k lines) and `frontend/src/App.jsx`
-  (~3.5k lines) are each a single module; splitting them into routers and page
-  modules is the obvious next refactor.
+- **Rates are seeded by hand.** `fx_rates` has no automatic feed; an expense in a
+  currency with no rate on file is excluded from totals and reported as
+  unconverted. Wiring a rate provider is a follow-up.
+- **Retrieval defaults to shadow mode.** Until `POLICY_RETRIEVAL_MODE=vector` is set,
+  audits still decide with the old keyword trimmer; retrieval only runs alongside and
+  logs. Citations are therefore not enforced on verdicts until you switch.
+- **Policies that predate `005_policy_chunks.sql` have no chunks.** Chunking happens
+  at upload, so retrieval returns nothing and audits fall back to keyword context
+  until the policy is re-uploaded.
 
 ---
 

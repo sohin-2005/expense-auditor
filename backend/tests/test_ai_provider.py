@@ -1,7 +1,22 @@
 import pytest
 import ai_provider
-from ai_provider import ProviderSpec, complete_json, load_config, safe_json_loads, TEXT, VISION
-from ai_provider import AIConfig, AIUnavailableError, call_ai_json
+import asyncio
+
+import ai_provider
+from ai_provider import ProviderSpec, load_config, safe_json_loads, TEXT, VISION
+from ai_provider import AIConfig, AIUnavailableError
+
+
+# complete_json and call_ai_json are async now -- a 10-12s vision call held
+# the event loop and, with one uvicorn worker, stalled every other request.
+# These tests drive them directly rather than through a client, so they get
+# thin sync runners; the test bodies below are unchanged by that move.
+def complete_json(*args, **kwargs):
+    return asyncio.run(ai_provider.complete_json(*args, **kwargs))
+
+
+def call_ai_json(*args, **kwargs):
+    return asyncio.run(ai_provider.call_ai_json(*args, **kwargs))
 
 
 def test_text_chain_is_gemini_then_groq_when_both_keys_present():
@@ -113,7 +128,8 @@ class _StubCompletions:
         self.script = list(script)
         self.calls = []
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
+        # Async to match AsyncOpenAI: complete_json awaits this call.
         self.calls.append(kwargs)
         item = self.script.pop(0)
         if isinstance(item, Exception):
@@ -359,3 +375,91 @@ def test_catalog_client_factory_uses_a_short_explicit_timeout(monkeypatch):
     # above (plus backoff) across the boot-time catalog probe -- the exact
     # exposure this factory exists to close. Must be pinned to zero.
     assert captured["max_retries"] == 0
+
+
+# ── embeddings ───────────────────────────────────────────────────────────
+
+class _StubEmbeddingItem:
+    def __init__(self, index, embedding):
+        self.index = index
+        self.embedding = embedding
+
+
+class _StubEmbeddings:
+    def __init__(self, items):
+        self._items = items
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return type("R", (), {"data": self._items})()
+
+
+class _StubEmbedClient:
+    def __init__(self, items):
+        self.embeddings = _StubEmbeddings(items)
+
+
+def _embed_cfg(dims=4):
+    spec = ProviderSpec("gemini", "k", "http://g", "gemini-embedding-001", False)
+    return AIConfig(text_chain=[spec], vision_chain=[], timeout_seconds=5,
+                    retries=0, embed_spec=spec, embed_dimensions=dims)
+
+
+def test_embedding_index_none_is_treated_as_position_zero():
+    """Gemini's OpenAI-compatible endpoint returns index=None for the FIRST
+    item and real integers after it.
+
+    Reading None as "unusable" -- the obvious interpretation -- silently
+    dropped the first embedding of every batch. A policy came back with one
+    fewer vector than it had chunks, so retrieval quietly lost its opening
+    section and reported a smaller number in a log line rather than failing.
+    """
+    items = [_StubEmbeddingItem(None, [0.1, 0.2, 0.3, 0.4]),
+             _StubEmbeddingItem(1, [0.5, 0.6, 0.7, 0.8])]
+    client = _StubEmbedClient(items)
+    out = asyncio.run(ai_provider.embed_texts(
+        ["first", "second"], config=_embed_cfg(), client_factory=lambda spec: client))
+
+    assert out[0] == [0.1, 0.2, 0.3, 0.4], "first embedding was dropped"
+    assert out[1] == [0.5, 0.6, 0.7, 0.8]
+
+
+def test_embedding_respects_an_explicit_index_order():
+    """A provider that returns items out of order must still align to input."""
+    items = [_StubEmbeddingItem(1, [9, 9, 9, 9]),
+             _StubEmbeddingItem(0, [1, 1, 1, 1])]
+    client = _StubEmbedClient(items)
+    out = asyncio.run(ai_provider.embed_texts(
+        ["a", "b"], config=_embed_cfg(), client_factory=lambda spec: client))
+    assert out == [[1, 1, 1, 1], [9, 9, 9, 9]]
+
+
+def test_embedding_width_mismatch_yields_no_vectors():
+    """Vectors of the wrong width are incomparable with the stored ones and
+    Postgres would reject them anyway. Fail as None rather than half-write."""
+    items = [_StubEmbeddingItem(None, [0.1, 0.2])]   # 2 dims, config says 4
+    client = _StubEmbedClient(items)
+    out = asyncio.run(ai_provider.embed_texts(
+        ["only"], config=_embed_cfg(dims=4), client_factory=lambda spec: client))
+    assert out == [None]
+
+
+def test_embedding_failure_returns_none_rather_than_raising():
+    """A chunk without a vector still participates in keyword search, so a
+    partial embedding run must degrade retrieval, not lose the policy."""
+    class _Boom:
+        class embeddings:
+            @staticmethod
+            async def create(**kwargs):
+                raise RuntimeError("provider down")
+    out = asyncio.run(ai_provider.embed_texts(
+        ["a", "b"], config=_embed_cfg(), client_factory=lambda spec: _Boom()))
+    assert out == [None, None]
+
+
+def test_embedding_without_a_provider_is_a_typed_error():
+    cfg = AIConfig(text_chain=[], vision_chain=[], timeout_seconds=5, retries=0,
+                   embed_spec=None)
+    with pytest.raises(AIUnavailableError):
+        asyncio.run(ai_provider.embed_texts(["a"], config=cfg))

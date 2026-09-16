@@ -20,5 +20,8 @@ services:
         sync: false # required for image receipts -- vision has no fallback provider
       - key: FRONTEND_ORIGINS
         sync: false # e.g. https://your-app.vercel.app,https://yourdomain.com
+      - key: SUPABASE_RECEIPT_BUCKET
+        value: receipts # private Supabase Storage bucket; Render's disk is
+                        # ephemeral, so disk-backed receipts are lost on deploy
       - key: PYTHON_VERSION
         value: 3.11.9

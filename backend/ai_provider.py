@@ -9,18 +9,20 @@ outage this module was written to fix.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
 TEXT = "text"
 VISION = "vision"
+EMBED = "embed"
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
@@ -33,6 +35,17 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _DEFAULT_GEMINI_TEXT_MODEL = "gemini-3.5-flash"
 _DEFAULT_GEMINI_VISION_MODEL = "gemini-3.5-flash"
 _DEFAULT_GROQ_TEXT_MODEL = "qwen/qwen3.8-27b"
+
+# Embeddings are Gemini-only, for the same reason vision is: the Groq account
+# exposes no embedding model, so there is nothing to fall back to.
+# gemini-embedding-001 serves the OpenAI-compatible /embeddings endpoint at
+# the same base URL as the chat models. Its native width is 3072; 768 is one
+# of the three supported truncations and is what db/005_policy_chunks.sql
+# declares. Changing either of these means altering that column and
+# re-embedding every chunk -- vectors from different models, or different
+# widths of the same model, are not comparable.
+_DEFAULT_GEMINI_EMBED_MODEL = "gemini-embedding-001"
+_DEFAULT_EMBED_DIMENSIONS = 768
 
 # Vision calls measured at ~10-12s, with occasional 29s outliers, so the old
 # 25s Groq timeout is too tight.
@@ -62,14 +75,23 @@ class AIConfig:
     vision_chain: list[ProviderSpec]
     timeout_seconds: float
     retries: int
+    embed_spec: ProviderSpec | None = None
+    embed_dimensions: int = _DEFAULT_EMBED_DIMENSIONS
 
 
 def load_config(env: Mapping[str, str]) -> AIConfig:
     gemini_key = (env.get("GEMINI_API_KEY") or "").strip()
     groq_key = (env.get("GROQ_API_KEY") or "").strip()
 
-    gemini_text = gemini_vision = None
+    gemini_text = gemini_vision = gemini_embed = None
     if gemini_key:
+        gemini_embed = ProviderSpec(
+            name="gemini",
+            api_key=gemini_key,
+            base_url=GEMINI_BASE_URL,
+            model=(env.get("GEMINI_EMBED_MODEL") or _DEFAULT_GEMINI_EMBED_MODEL).strip(),
+            supports_vision=False,
+        )
         gemini_text = ProviderSpec(
             name="gemini",
             api_key=gemini_key,
@@ -110,6 +132,12 @@ def load_config(env: Mapping[str, str]) -> AIConfig:
             "AI_TIMEOUT_SECONDS", env.get("AI_TIMEOUT_SECONDS"), _DEFAULT_TIMEOUT_SECONDS
         ),
         retries=_parse_int("AI_RETRIES", env.get("AI_RETRIES"), _DEFAULT_RETRIES),
+        embed_spec=gemini_embed,
+        embed_dimensions=_parse_int(
+            "GEMINI_EMBED_DIMENSIONS",
+            env.get("GEMINI_EMBED_DIMENSIONS"),
+            _DEFAULT_EMBED_DIMENSIONS,
+        ),
     )
 
 
@@ -171,9 +199,36 @@ def safe_json_loads(raw_text: str) -> dict:
     return {}
 
 
+@lru_cache(maxsize=8)
 def _default_client_factory(spec: ProviderSpec):
-    from openai import OpenAI
-    return OpenAI(api_key=spec.api_key, base_url=spec.base_url)
+    """One reusable async client per provider.
+
+    Two things changed here, and both were costing real time on every call.
+
+    Pooling: this used to build a fresh OpenAI() per invocation, so no
+    connection was ever reused and every completion paid DNS + TCP + a full
+    TLS handshake before its first byte. A receipt upload makes two calls and
+    paid it twice. ProviderSpec is a frozen dataclass, so it is hashable and
+    lru_cache can key on it directly; the chain is at most a couple of specs,
+    so maxsize=8 never evicts in practice.
+
+    Async: the sync client blocked the event loop for the whole call -- 10-12s
+    for vision -- which with one uvicorn worker meant a single upload stalled
+    every other request in the deployment, /health included.
+
+    max_retries=0 is deliberate and was missing. complete_json() below runs
+    its own retry loop, so leaving the SDK's default of 2 meant the two
+    stacked: up to 6 HTTP attempts per provider and, against the 45s
+    per-request timeout, a worst case near 270s on a chain that is supposed
+    to give up long before that. _catalog_client_factory already reasoned
+    its way to zero for the same reason; the user-facing path never got it.
+    """
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(
+        api_key=spec.api_key,
+        base_url=spec.base_url,
+        max_retries=0,
+    )
 
 
 def _catalog_client_factory(spec: ProviderSpec):
@@ -199,7 +254,7 @@ def _catalog_client_factory(spec: ProviderSpec):
     )
 
 
-def complete_json(
+async def complete_json(
     spec: ProviderSpec,
     messages: Sequence[dict],
     max_tokens: int,
@@ -214,7 +269,7 @@ def complete_json(
 
     for attempt in range(retries + 1):
         try:
-            resp = client.chat.completions.create(
+            resp = await client.chat.completions.create(
                 model=spec.model,
                 messages=list(messages),
                 response_format={"type": "json_object"},
@@ -229,7 +284,9 @@ def complete_json(
         except Exception as e:
             last_err = e
             if attempt < retries:
-                time.sleep(0.45 * (attempt + 1))
+                # asyncio.sleep, not time.sleep: the old blocking sleep held
+                # the event loop through the whole backoff.
+                await asyncio.sleep(0.45 * (attempt + 1))
                 continue
             break
 
@@ -258,7 +315,7 @@ def get_config() -> AIConfig:
     return _ACTIVE_CONFIG
 
 
-def call_ai_json(
+async def call_ai_json(
     messages: Sequence[dict],
     task: str,
     max_tokens: int,
@@ -271,6 +328,10 @@ def call_ai_json(
     Text tasks fall back from Gemini to Groq. Vision tasks cannot fall back --
     the Groq account has no vision model -- so they raise AIUnavailableError,
     which the API layer turns into an honest 503 rather than a generic 500.
+
+    Awaitable: callers must `await` this. It is the longest I/O in the
+    service (~10-12s for vision), so it is the one call that most needs to
+    yield the event loop rather than hold it.
     """
     cfg = config or get_config()
     if task == TEXT:
@@ -287,7 +348,7 @@ def call_ai_json(
     failures: list[str] = []
     for spec in chain:
         try:
-            result = complete_json(
+            result = await complete_json(
                 spec,
                 messages,
                 max_tokens=max_tokens,
@@ -314,10 +375,81 @@ def call_ai_json(
     raise AIUnavailableError(task, failures)
 
 
+async def embed_texts(
+    texts: Sequence[str],
+    config: AIConfig | None = None,
+    client_factory: Callable[[ProviderSpec], Any] | None = None,
+) -> list[list[float] | None]:
+    """Embed a batch of texts, one API call for the whole batch.
+
+    Returns a list positionally aligned with `texts`, holding None where an
+    embedding could not be produced. None is a usable answer, not a failure to
+    raise on: a chunk without a vector still participates in keyword search,
+    so a partial embedding run degrades retrieval rather than losing the
+    policy. Callers report how many came back null.
+
+    Raises AIUnavailableError only when no embedding provider is configured
+    at all, which is a deployment fault rather than a transient one.
+    """
+    if not texts:
+        return []
+
+    cfg = config or get_config()
+    spec = cfg.embed_spec
+    if spec is None:
+        raise AIUnavailableError(EMBED, ["no embedding provider configured (needs GEMINI_API_KEY)"])
+
+    factory = client_factory or _default_client_factory
+    client = factory(spec)
+
+    try:
+        resp = await client.embeddings.create(
+            model=spec.model,
+            input=list(texts),
+            dimensions=cfg.embed_dimensions,
+        )
+    except Exception as e:
+        logger.warning("embedding batch of %d failed on %s/%s: %s",
+                       len(texts), spec.name, spec.model, e)
+        return [None] * len(texts)
+
+    # Prefer the item's own `index`, but fall back to its position in the
+    # response when that is missing or not an int.
+    #
+    # Gemini's OpenAI-compatible endpoint returns index=None for the FIRST
+    # item and a real integer for the rest. Treating None as "unusable" -- the
+    # obvious reading -- silently dropped the first embedding of every batch,
+    # so a policy came back with one fewer vector than it had chunks and
+    # retrieval quietly lost its opening section. It failed as a smaller
+    # number in a log line, never as an error.
+    out: list[list[float] | None] = [None] * len(texts)
+    for position, item in enumerate(getattr(resp, "data", None) or []):
+        idx = getattr(item, "index", None)
+        if not isinstance(idx, int):
+            idx = position
+        vec = getattr(item, "embedding", None)
+        if vec is None or not (0 <= idx < len(out)):
+            continue
+        if len(vec) != cfg.embed_dimensions:
+            # A width mismatch means the stored vectors and the query vectors
+            # would be incomparable, and Postgres would reject the insert
+            # anyway. Say which, once, rather than per row.
+            logger.error(
+                "embedding width %d does not match the configured %d; check "
+                "GEMINI_EMBED_DIMENSIONS against db/005_policy_chunks.sql",
+                len(vec), cfg.embed_dimensions)
+            return [None] * len(texts)
+        out[idx] = list(vec)
+    return out
+
+
 def describe_providers(config: AIConfig | None = None) -> list[dict]:
     cfg = config or get_config()
     rows = [{"name": s.name, "model": s.model, "task": TEXT} for s in cfg.text_chain]
     rows += [{"name": s.name, "model": s.model, "task": VISION} for s in cfg.vision_chain]
+    if cfg.embed_spec is not None:
+        rows.append({"name": cfg.embed_spec.name, "model": cfg.embed_spec.model,
+                     "task": EMBED, "dimensions": cfg.embed_dimensions})
     return rows
 
 
@@ -354,7 +486,15 @@ def check_models(
     warnings: list[str] = []
     catalogs: dict[str, set[str]] = {}
 
-    for spec in list(cfg.text_chain) + list(cfg.vision_chain):
+    # The embedding model drifts out of a catalog exactly like the chat ones,
+    # and its failure is quieter: retrieval silently loses its vector half and
+    # falls back to keyword matching, which is the behaviour this project
+    # replaced.
+    configured = list(cfg.text_chain) + list(cfg.vision_chain)
+    if cfg.embed_spec is not None:
+        configured.append(cfg.embed_spec)
+
+    for spec in configured:
         if spec.name not in catalogs:
             try:
                 client = factory(spec)
